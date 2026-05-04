@@ -62,11 +62,12 @@ export default function Index() {
   const [inputText, setInputText] = useState('');
   const [calls, setCalls] = useState<CallRecord[]>([]);
   const [findUid, setFindUid] = useState('');
-  const [foundUser, setFoundUser] = useState<{ id: number; name: string; email: string; user_uid: string } | null>(null);
+  const [foundUser, setFoundUser] = useState<{ id: number; name: string; email: string; user_uid: string; username?: string } | null>(null);
   const [findError, setFindError] = useState('');
 
   // Profile edit
   const [profileName, setProfileName] = useState('');
+  const [profileUsername, setProfileUsername] = useState('');
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMsg, setProfileMsg] = useState('');
 
@@ -108,6 +109,7 @@ export default function Index() {
     const data = await r.json();
     if (data.conversations) setConversations(data.conversations);
     if (data.user?.user_uid) setMyUidState(data.user.user_uid);
+    if (data.user?.username !== undefined) setProfileUsername(data.user.username || '');
   }, [token, authFetch]);
 
   const loadMessages = useCallback(async (convId: number) => {
@@ -278,7 +280,8 @@ export default function Index() {
   const findUser = async () => {
     setFoundUser(null); setFindError('');
     if (!findUid.trim()) return;
-    const r = await authFetch(`${MSG_URL}?action=find-user&uid=${findUid.trim()}`);
+    const q = encodeURIComponent(findUid.trim());
+    const r = await authFetch(`${MSG_URL}?action=find-user&q=${q}`);
     const data = await r.json();
     if (data.user) setFoundUser(data.user);
     else setFindError(data.error || 'Не найден');
@@ -296,10 +299,18 @@ export default function Index() {
   const saveProfile = async () => {
     if (!profileName.trim() || !token) return;
     setProfileSaving(true); setProfileMsg('');
-    const r = await authFetch(`${MSG_URL}?action=update-profile`, { method: 'POST', body: JSON.stringify({ name: profileName.trim() }) });
+    const r = await authFetch(`${MSG_URL}?action=update-profile`, {
+      method: 'POST',
+      body: JSON.stringify({ name: profileName.trim(), username: profileUsername.trim() })
+    });
     const data = await r.json();
     setProfileSaving(false);
-    setProfileMsg(data.ok ? 'Сохранено!' : (data.error || 'Ошибка'));
+    if (data.ok) {
+      setProfileMsg('Сохранено!');
+      if (data.username !== undefined) setProfileUsername(data.username || '');
+    } else {
+      setProfileMsg(data.error || 'Ошибка');
+    }
     setTimeout(() => setProfileMsg(''), 3000);
   };
 
@@ -532,19 +543,21 @@ export default function Index() {
       {tab === 'find' && (
         <>
           <div style={{ padding: '12px 16px', background: '#17212b', borderBottom: '1px solid #1f2936', flexShrink: 0, paddingTop: 'max(12px, env(safe-area-inset-top))' }}>
-            <span style={{ color: '#fff', fontWeight: 700, fontSize: 20 }}>Найти по ID</span>
+            <span style={{ color: '#fff', fontWeight: 700, fontSize: 20 }}>Найти человека</span>
           </div>
           <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
             <div style={{ background: '#17212b', borderRadius: 12, padding: 16, marginBottom: 16 }}>
-              <div style={{ color: '#8896a3', fontSize: 13 }}>Ваш ID</div>
-              <div style={{ color: '#5eadd4', fontWeight: 700, fontSize: 28, letterSpacing: 4, marginTop: 4 }}>{myUid}</div>
+              <div style={{ color: '#8896a3', fontSize: 12, marginBottom: 4 }}>Ваш ID и никнейм</div>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+                <span style={{ color: '#5eadd4', fontWeight: 700, fontSize: 24, letterSpacing: 3 }}>{myUid}</span>
+                {profileUsername && <span style={{ color: '#a8b4c8', fontSize: 16 }}>@{profileUsername}</span>}
+              </div>
               <div style={{ color: '#8896a3', fontSize: 12, marginTop: 6 }}>Поделитесь с друзьями, чтобы они могли найти вас</div>
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <input value={findUid} onChange={e => setFindUid(e.target.value)} onKeyDown={e => e.key === 'Enter' && findUser()}
-                placeholder="Введите 6-значный ID"
-                maxLength={6}
-                style={{ flex: 1, background: '#242f3d', border: '1px solid #2f3f51', borderRadius: 10, padding: '12px 14px', color: '#fff', fontSize: 16, outline: 'none' }}
+                placeholder="ID (123456) или @никнейм"
+                style={{ flex: 1, background: '#242f3d', border: '1px solid #2f3f51', borderRadius: 10, padding: '12px 14px', color: '#fff', fontSize: 15, outline: 'none' }}
               />
               <button onClick={findUser} style={{ background: '#2b5278', border: 'none', borderRadius: 10, padding: '12px 18px', color: '#5eadd4', cursor: 'pointer', fontWeight: 600, fontSize: 15 }}>Найти</button>
             </div>
@@ -556,7 +569,9 @@ export default function Index() {
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ color: '#fff', fontWeight: 600, fontSize: 16 }}>{foundUser.name || foundUser.email}</div>
-                  <div style={{ color: '#8896a3', fontSize: 12 }}>ID: {foundUser.user_uid}</div>
+                  <div style={{ color: '#8896a3', fontSize: 12 }}>
+                    ID: {foundUser.user_uid}{foundUser.username ? <span style={{ marginLeft: 8, color: '#5eadd4' }}>@{foundUser.username}</span> : ''}
+                  </div>
                 </div>
                 <button onClick={() => startChat(foundUser.id)} style={{ background: '#2b5278', border: 'none', borderRadius: 10, padding: '10px 16px', color: '#5eadd4', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}>Написать</button>
               </div>
@@ -578,13 +593,14 @@ export default function Index() {
                 {getInitials(myName)}
               </div>
               <div style={{ color: '#fff', fontWeight: 700, fontSize: 20, marginTop: 12 }}>{myName}</div>
-              <div style={{ background: '#17212b', borderRadius: 8, padding: '4px 14px', marginTop: 8 }}>
+              {profileUsername && <div style={{ color: '#5eadd4', fontSize: 15, marginTop: 2 }}>@{profileUsername}</div>}
+              <div style={{ background: '#1f2d3d', borderRadius: 8, padding: '4px 14px', marginTop: 8 }}>
                 <span style={{ color: '#8896a3', fontSize: 12 }}>ID: </span>
                 <span style={{ color: '#5eadd4', fontWeight: 700, fontSize: 18, letterSpacing: 3 }}>{myUid}</span>
               </div>
             </div>
 
-            {/* Edit name */}
+            {/* Edit name + username */}
             <div style={{ background: '#17212b', borderRadius: 12, padding: 16, marginBottom: 12 }}>
               <div style={{ color: '#8896a3', fontSize: 12, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Ваше имя</div>
               <input
@@ -593,6 +609,18 @@ export default function Index() {
                 placeholder="Введите имя"
                 style={{ width: '100%', background: '#242f3d', border: '1px solid #2f3f51', borderRadius: 10, padding: '12px 14px', color: '#fff', fontSize: 15, outline: 'none', boxSizing: 'border-box' }}
               />
+              <div style={{ color: '#8896a3', fontSize: 12, marginTop: 14, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Никнейм</div>
+              <div style={{ position: 'relative' }}>
+                <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: '#5eadd4', fontSize: 15, fontWeight: 600 }}>@</span>
+                <input
+                  value={profileUsername}
+                  onChange={e => setProfileUsername(e.target.value.replace(/[^a-zA-Z0-9_]/g, '').toLowerCase())}
+                  placeholder="username"
+                  maxLength={32}
+                  style={{ width: '100%', background: '#242f3d', border: '1px solid #2f3f51', borderRadius: 10, padding: '12px 14px 12px 28px', color: '#fff', fontSize: 15, outline: 'none', boxSizing: 'border-box' }}
+                />
+              </div>
+              <div style={{ color: '#5e6e85', fontSize: 12, marginTop: 6 }}>Только латиница, цифры и _ (3–32 символа). По нику вас смогут найти.</div>
               {profileMsg && <div style={{ color: profileMsg === 'Сохранено!' ? '#4dbb5e' : '#e05c5c', fontSize: 13, marginTop: 8 }}>{profileMsg}</div>}
               <button onClick={saveProfile} disabled={profileSaving}
                 style={{ width: '100%', background: '#2b5278', border: 'none', borderRadius: 10, padding: '13px 0', color: '#5eadd4', cursor: 'pointer', fontWeight: 600, fontSize: 15, marginTop: 12 }}>

@@ -41,11 +41,11 @@ def get_user_from_token(token, db):
         payload = jwt.decode(token, secret, algorithms=['HS256'])
         user_id = payload.get('user_id')
         cur = db.cursor()
-        cur.execute("SELECT id, email, name, user_uid FROM users WHERE id = %s", (user_id,))
+        cur.execute("SELECT id, email, name, user_uid, username FROM users WHERE id = %s", (user_id,))
         row = cur.fetchone()
         if not row:
             return None
-        return {'id': row[0], 'email': row[1], 'name': row[2], 'user_uid': row[3]}
+        return {'id': row[0], 'email': row[1], 'name': row[2], 'user_uid': row[3], 'username': row[4]}
     except Exception:
         return None
 
@@ -97,7 +97,7 @@ def handler(event: dict, context) -> dict:
             cur.execute("""
                 SELECT c.id, c.last_message_at,
                     CASE WHEN c.user1_id = %s THEN c.user2_id ELSE c.user1_id END as partner_id,
-                    u.name, u.email, u.user_uid,
+                    u.name, u.email, u.user_uid, u.username,
                     m.content as last_msg, m.type as last_type, m.sender_id as last_sender,
                     (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id AND is_read = false AND sender_id != %s) as unread
                 FROM conversations c
@@ -118,10 +118,11 @@ def handler(event: dict, context) -> dict:
                     'partner_name': r[3] or r[4],
                     'partner_email': r[4],
                     'partner_uid': r[5],
-                    'last_message': r[6],
-                    'last_type': r[7],
-                    'last_sender_id': r[8],
-                    'unread': int(r[9])
+                    'partner_username': r[6],
+                    'last_message': r[7],
+                    'last_type': r[8],
+                    'last_sender_id': r[9],
+                    'unread': int(r[10])
                 })
             return json_response({'conversations': convs, 'user': user})
 
@@ -212,22 +213,30 @@ def handler(event: dict, context) -> dict:
             db.commit()
             return json_response({'id': msg_id, 'created_at': created_at, 'url': cdn_url})
 
-        # === FIND USER BY UID ===
+        # === FIND USER BY UID OR USERNAME ===
         elif action == 'find-user' and event.get('httpMethod') == 'GET':
             if not user:
                 return json_response({'error': 'Не авторизован'}, 401)
             params = event.get('queryStringParameters') or {}
-            uid = (params.get('uid') or '').strip()
-            if not uid:
-                return json_response({'error': 'uid обязателен'}, 400)
+            query = (params.get('q') or params.get('uid') or '').strip().lstrip('@')
+            if not query:
+                return json_response({'error': 'Введите ID или @никнейм'}, 400)
             cur = db.cursor()
-            cur.execute("SELECT id, name, email, user_uid FROM users WHERE user_uid = %s", (uid,))
+            # Ищем по user_uid (цифры) или по username
+            cur.execute("""
+                SELECT id, name, email, user_uid, username FROM users
+                WHERE user_uid = %s OR LOWER(username) = LOWER(%s)
+                LIMIT 1
+            """, (query, query))
             row = cur.fetchone()
             if not row:
                 return json_response({'error': 'Пользователь не найден'}, 404)
             if row[0] == user['id']:
                 return json_response({'error': 'Это вы сами'}, 400)
-            return json_response({'user': {'id': row[0], 'name': row[1] or row[2], 'email': row[2], 'user_uid': row[3]}})
+            return json_response({'user': {
+                'id': row[0], 'name': row[1] or row[2],
+                'email': row[2], 'user_uid': row[3], 'username': row[4]
+            }})
 
         # === UPDATE PROFILE ===
         elif action == 'update-profile' and event.get('httpMethod') == 'POST':
@@ -235,12 +244,26 @@ def handler(event: dict, context) -> dict:
                 return json_response({'error': 'Не авторизован'}, 401)
             body = json.loads(event.get('body') or '{}')
             name = (body.get('name') or '').strip()
+            username = (body.get('username') or '').strip().lstrip('@').lower()
             if not name:
                 return json_response({'error': 'Имя не может быть пустым'}, 400)
+            # Валидация username
+            if username:
+                import re
+                if not re.match(r'^[a-z0-9_]{3,32}$', username):
+                    return json_response({'error': 'Никнейм: 3–32 символа, только латиница, цифры и _'}, 400)
+                # Проверяем уникальность
+                cur = db.cursor()
+                cur.execute("SELECT id FROM users WHERE LOWER(username) = %s AND id != %s", (username, user['id']))
+                if cur.fetchone():
+                    return json_response({'error': 'Этот никнейм уже занят'}, 409)
             cur = db.cursor()
-            cur.execute("UPDATE users SET name = %s, updated_at = NOW() WHERE id = %s", (name, user['id']))
+            cur.execute(
+                "UPDATE users SET name = %s, username = %s, updated_at = NOW() WHERE id = %s",
+                (name, username or None, user['id'])
+            )
             db.commit()
-            return json_response({'ok': True, 'name': name})
+            return json_response({'ok': True, 'name': name, 'username': username or None})
 
         # === START CONVERSATION ===
         elif action == 'start-conversation' and event.get('httpMethod') == 'POST':
