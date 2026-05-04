@@ -11,8 +11,9 @@ type Screen = 'main' | 'chat' | 'call';
 
 interface Conversation {
   id: number; partner_id: number; partner_name: string;
-  partner_email: string; partner_uid: string; last_message: string;
-  last_type: string; last_sender_id: number; last_message_at: string; unread: number;
+  partner_email: string; partner_uid: string; partner_username?: string;
+  last_message: string; last_type: string; last_sender_id: number;
+  last_message_at: string; unread: number;
 }
 interface Message {
   id: number; content: string; type: string; sender_id: number;
@@ -21,6 +22,9 @@ interface Message {
 interface CallRecord {
   id: number; type: string; status: string; direction: string;
   partner_name: string; partner_id: number; started_at: string;
+}
+interface FoundUser {
+  id: number; name: string; email: string; user_uid: string; username?: string;
 }
 
 function getInitials(name: string) {
@@ -55,31 +59,30 @@ export default function Index() {
 
   const [tab, setTab] = useState<Tab>('chats');
   const [screen, setScreen] = useState<Screen>('main');
-  const [myUidState, setMyUidState] = useState('');
+  const [myUid, setMyUid] = useState('');
+  const [myUsername, setMyUsername] = useState('');
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConv, setActiveConv] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [calls, setCalls] = useState<CallRecord[]>([]);
-  const [findUid, setFindUid] = useState('');
-  const [foundUser, setFoundUser] = useState<{ id: number; name: string; email: string; user_uid: string; username?: string } | null>(null);
+  const [findQuery, setFindQuery] = useState('');
+  const [foundUser, setFoundUser] = useState<FoundUser | null>(null);
   const [findError, setFindError] = useState('');
-
-  // Profile edit
   const [profileName, setProfileName] = useState('');
   const [profileUsername, setProfileUsername] = useState('');
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMsg, setProfileMsg] = useState('');
-
-  // Voice recording
   const [recording, setRecording] = useState(false);
   const [recSeconds, setRecSeconds] = useState(0);
+  const [incomingCall, setIncomingCall] = useState<{ callId: string; fromId: number; fromName: string; type: 'voice' | 'video'; offer: RTCSessionDescriptionInit } | null>(null);
+  const [callScreen, setCallScreen] = useState<{ partnerId: number; partnerName: string; type: 'voice' | 'video'; callId: string; outgoing: boolean } | null>(null);
+
+  // Refs
+  const tokenRef = useRef<string | null>(null);
   const mediaRecRef = useRef<MediaRecorder | null>(null);
   const recChunksRef = useRef<Blob[]>([]);
   const recTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // WebRTC
-  const [callScreen, setCallScreen] = useState<{ partnerId: number; partnerName: string; type: 'voice' | 'video'; callId: string; outgoing: boolean } | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -89,67 +92,105 @@ export default function Index() {
   const lastSigIdRef = useRef(0);
   const incomingPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const incomingLastSigRef = useRef(0);
-  const [incomingCall, setIncomingCall] = useState<{ callId: string; fromId: number; fromName: string; type: 'voice' | 'video'; offer: RTCSessionDescriptionInit } | null>(null);
-
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const token = auth.accessToken;
-  const authUser = auth.user as { id: number; email: string; name: string | null; user_uid?: string } | null;
+  const msgPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const activeConvRef = useRef<Conversation | null>(null);
 
+  // Всегда актуальный токен через ref — ключевое исправление 401
+  const token = auth.accessToken;
+  tokenRef.current = token;
+  activeConvRef.current = activeConv;
+
+  const authUser = auth.user as { id: number; email: string; name: string | null; user_uid?: string; username?: string } | null;
+
+  // Стабильный authFetch — читает токен из ref, не пересоздаётся
   const authFetch = useCallback(async (url: string, opts: RequestInit = {}) => {
+    const t = tokenRef.current;
     return fetch(url, {
       ...opts,
-      headers: { 'Content-Type': 'application/json', 'X-Authorization': `Bearer ${token}`, ...(opts.headers || {}) }
+      headers: {
+        'Content-Type': 'application/json',
+        ...(t ? { 'X-Authorization': `Bearer ${t}` } : {}),
+        ...(opts.headers || {})
+      }
     });
-  }, [token]);
+  }, []); // пустые зависимости — функция стабильна навсегда
 
   const loadConversations = useCallback(async () => {
-    if (!token) return;
-    const r = await authFetch(`${MSG_URL}?action=conversations`);
-    const data = await r.json();
-    if (data.conversations) setConversations(data.conversations);
-    if (data.user?.user_uid) setMyUidState(data.user.user_uid);
-    if (data.user?.username !== undefined) setProfileUsername(data.user.username || '');
-  }, [token, authFetch]);
+    if (!tokenRef.current) return;
+    try {
+      const r = await authFetch(`${MSG_URL}?action=conversations`);
+      if (!r.ok) return;
+      const data = await r.json();
+      if (data.conversations) setConversations(data.conversations);
+      if (data.user?.user_uid) setMyUid(data.user.user_uid);
+      if (data.user?.name) setProfileName(data.user.name);
+      else if (data.user?.email) setProfileName(data.user.email.split('@')[0]);
+      if (data.user?.username !== undefined) {
+        setMyUsername(data.user.username || '');
+        setProfileUsername(data.user.username || '');
+      }
+    } catch { /* ignore */ }
+  }, [authFetch]);
 
   const loadMessages = useCallback(async (convId: number) => {
-    if (!token) return;
-    const r = await authFetch(`${MSG_URL}?action=messages&conversation_id=${convId}`);
-    const data = await r.json();
-    if (data.messages) setMessages(data.messages);
-  }, [token, authFetch]);
+    if (!tokenRef.current) return;
+    try {
+      const r = await authFetch(`${MSG_URL}?action=messages&conversation_id=${convId}`);
+      if (!r.ok) return;
+      const data = await r.json();
+      if (data.messages) setMessages(data.messages);
+    } catch { /* ignore */ }
+  }, [authFetch]);
 
   const loadCalls = useCallback(async () => {
-    if (!token) return;
-    const r = await authFetch(`${MSG_URL}?action=calls`);
-    const data = await r.json();
-    if (data.calls) setCalls(data.calls);
-  }, [token, authFetch]);
+    if (!tokenRef.current) return;
+    try {
+      const r = await authFetch(`${MSG_URL}?action=calls`);
+      if (!r.ok) return;
+      const data = await r.json();
+      if (data.calls) setCalls(data.calls);
+    } catch { /* ignore */ }
+  }, [authFetch]);
 
-  useEffect(() => { if (token) loadConversations(); }, [token, loadConversations]);
-  useEffect(() => { if (tab === 'calls') loadCalls(); }, [tab, loadCalls]);
-  useEffect(() => { if (tab === 'profile' && token) loadConversations(); }, [tab, token, loadConversations]);
+  // Загружаем данные при появлении токена
   useEffect(() => {
-    if (authUser?.name) setProfileName(authUser.name);
-    else if (authUser?.email) setProfileName(authUser.email.split('@')[0]);
-  }, [authUser?.name, authUser?.email]);
+    if (token) loadConversations();
+  }, [token]); // eslint-disable-line
 
+  // Вкладки
+  useEffect(() => {
+    if (tab === 'calls' && token) loadCalls();
+    if (tab === 'profile' && token) loadConversations();
+    if (tab === 'chats' && token) loadConversations();
+  }, [tab]); // eslint-disable-line
+
+  // Поллинг сообщений
   useEffect(() => {
     if (!activeConv) return;
     loadMessages(activeConv.id);
-    pollRef.current = setInterval(() => loadMessages(activeConv.id), 3000);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [activeConv, loadMessages]);
+    msgPollRef.current = setInterval(() => {
+      if (activeConvRef.current) loadMessages(activeConvRef.current.id);
+    }, 3000);
+    return () => { if (msgPollRef.current) clearInterval(msgPollRef.current); };
+  }, [activeConv?.id]); // eslint-disable-line
 
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
-
-  // Incoming calls poll
   useEffect(() => {
-    if (!token || !authUser?.id) return;
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // Поллинг входящих звонков — один раз, читает токен из ref
+  useEffect(() => {
+    if (!authUser?.id) return;
+    const userId = authUser.id;
     incomingPollRef.current = setInterval(async () => {
+      if (!tokenRef.current) return;
       if (screen === 'call') return;
       try {
-        const r = await authFetch(`${MSG_URL}?action=signal-poll&call_id=incoming-${authUser.id}&after_id=${incomingLastSigRef.current}`);
+        const r = await fetch(
+          `${MSG_URL}?action=signal-poll&call_id=incoming-${userId}&after_id=${incomingLastSigRef.current}`,
+          { headers: { 'X-Authorization': `Bearer ${tokenRef.current}` } }
+        );
         if (!r.ok) return;
         const data = await r.json();
         for (const sig of (data.signals || [])) {
@@ -161,26 +202,33 @@ export default function Index() {
       } catch { /* ignore */ }
     }, 2500);
     return () => { if (incomingPollRef.current) clearInterval(incomingPollRef.current); };
-  }, [token, authUser?.id, screen, authFetch]);
+  }, [authUser?.id]); // только id, не screen/authFetch
 
   const sendMessage = async () => {
     if (!inputText.trim() || !activeConv) return;
     const text = inputText.trim();
     setInputText('');
-    await authFetch(`${MSG_URL}?action=send`, { method: 'POST', body: JSON.stringify({ conversation_id: activeConv.id, content: text, type: 'text' }) });
-    loadMessages(activeConv.id);
-    loadConversations();
+    try {
+      await authFetch(`${MSG_URL}?action=send`, {
+        method: 'POST',
+        body: JSON.stringify({ conversation_id: activeConv.id, content: text, type: 'text' })
+      });
+      loadMessages(activeConv.id);
+      loadConversations();
+    } catch { /* ignore */ }
   };
 
   const startRecording = async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mr = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-    recChunksRef.current = [];
-    mr.ondataavailable = e => recChunksRef.current.push(e.data);
-    mr.start();
-    mediaRecRef.current = mr;
-    setRecording(true); setRecSeconds(0);
-    recTimerRef.current = setInterval(() => setRecSeconds(s => s + 1), 1000);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      recChunksRef.current = [];
+      mr.ondataavailable = e => recChunksRef.current.push(e.data);
+      mr.start();
+      mediaRecRef.current = mr;
+      setRecording(true); setRecSeconds(0);
+      recTimerRef.current = setInterval(() => setRecSeconds(s => s + 1), 1000);
+    } catch { alert('Нет доступа к микрофону'); }
   };
 
   const stopRecording = async () => {
@@ -188,6 +236,7 @@ export default function Index() {
     if (recTimerRef.current) clearInterval(recTimerRef.current);
     const duration = recSeconds;
     setRecording(false);
+    const conv = activeConv;
     await new Promise<void>(resolve => {
       mediaRecRef.current!.onstop = () => resolve();
       mediaRecRef.current!.stop();
@@ -198,8 +247,12 @@ export default function Index() {
     reader.readAsDataURL(blob);
     reader.onloadend = async () => {
       const b64 = (reader.result as string).split(',')[1];
-      await authFetch(`${MSG_URL}?action=upload-voice`, { method: 'POST', body: JSON.stringify({ conversation_id: activeConv.id, audio: b64, duration }) });
-      loadMessages(activeConv.id); loadConversations();
+      await authFetch(`${MSG_URL}?action=upload-voice`, {
+        method: 'POST',
+        body: JSON.stringify({ conversation_id: conv.id, audio: b64, duration })
+      });
+      loadMessages(conv.id);
+      loadConversations();
     };
   };
 
@@ -211,9 +264,23 @@ export default function Index() {
     setRecording(false); setRecSeconds(0);
   };
 
+  // WebRTC
   const sendSignal = useCallback(async (callId: string, toUserId: number, type: string, payload: object) => {
-    await authFetch(`${MSG_URL}?action=signal-send`, { method: 'POST', body: JSON.stringify({ call_id: callId, to_user_id: toUserId, type, payload }) });
-  }, [authFetch]);
+    if (!tokenRef.current) return;
+    await fetch(`${MSG_URL}?action=signal-send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Authorization': `Bearer ${tokenRef.current}` },
+      body: JSON.stringify({ call_id: callId, to_user_id: toUserId, type, payload })
+    });
+  }, []);
+
+  const endCall = useCallback(() => {
+    if (sigPollRef.current) clearInterval(sigPollRef.current);
+    if (pcRef.current) { pcRef.current.close(); pcRef.current = null; }
+    if (localStreamRef.current) { localStreamRef.current.getTracks().forEach(t => t.stop()); localStreamRef.current = null; }
+    setCallScreen(prev => { if (prev) sendSignal(prev.callId, prev.partnerId, 'end', {}); return null; });
+    setScreen('main');
+  }, [sendSignal]);
 
   const createPC = useCallback((callId: string, partnerId: number) => {
     const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
@@ -226,91 +293,99 @@ export default function Index() {
     return pc;
   }, [sendSignal]);
 
-  const endCall = useCallback(() => {
-    if (sigPollRef.current) clearInterval(sigPollRef.current);
-    if (pcRef.current) { pcRef.current.close(); pcRef.current = null; }
-    if (localStreamRef.current) { localStreamRef.current.getTracks().forEach(t => t.stop()); localStreamRef.current = null; }
-    if (callScreen) sendSignal(callScreen.callId, callScreen.partnerId, 'end', {});
-    setCallScreen(null); setScreen('main');
-  }, [callScreen, sendSignal]);
-
   const startCall = async (partnerId: number, partnerName: string, type: 'voice' | 'video') => {
     const callId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     lastSigIdRef.current = 0;
     const pc = createPC(callId, partnerId);
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: type === 'video' });
-    localStreamRef.current = stream;
-    stream.getTracks().forEach(t => pc.addTrack(t, stream));
-    if (type === 'video' && localVideoRef.current) localVideoRef.current.srcObject = stream;
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    await sendSignal(callId, partnerId, 'offer', { sdp: offer, callType: type });
-    await authFetch(`${MSG_URL}?action=log-call`, { method: 'POST', body: JSON.stringify({ callee_id: partnerId, type, status: 'outgoing' }) });
-    setCallScreen({ partnerId, partnerName, type, callId, outgoing: true });
-    setScreen('call');
-    sigPollRef.current = setInterval(async () => {
-      try {
-        const r = await authFetch(`${MSG_URL}?action=signal-poll&call_id=${callId}&after_id=${lastSigIdRef.current}`);
-        if (!r.ok) return;
-        const data = await r.json();
-        for (const sig of (data.signals || [])) {
-          lastSigIdRef.current = sig.id;
-          if (sig.type === 'answer') await pc.setRemoteDescription(new RTCSessionDescription(sig.payload.sdp));
-          else if (sig.type === 'ice') await pc.addIceCandidate(new RTCIceCandidate(sig.payload.candidate));
-          else if (sig.type === 'end') endCall();
-        }
-      } catch { /* ignore */ }
-    }, 1000);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: type === 'video' });
+      localStreamRef.current = stream;
+      stream.getTracks().forEach(t => pc.addTrack(t, stream));
+      if (type === 'video' && localVideoRef.current) localVideoRef.current.srcObject = stream;
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await sendSignal(callId, partnerId, 'offer', { sdp: offer, callType: type });
+      await authFetch(`${MSG_URL}?action=log-call`, { method: 'POST', body: JSON.stringify({ callee_id: partnerId, type, status: 'outgoing' }) });
+      setCallScreen({ partnerId, partnerName, type, callId, outgoing: true });
+      setScreen('call');
+      sigPollRef.current = setInterval(async () => {
+        if (!tokenRef.current) return;
+        try {
+          const r = await fetch(`${MSG_URL}?action=signal-poll&call_id=${callId}&after_id=${lastSigIdRef.current}`,
+            { headers: { 'X-Authorization': `Bearer ${tokenRef.current}` } });
+          if (!r.ok) return;
+          const data = await r.json();
+          for (const sig of (data.signals || [])) {
+            lastSigIdRef.current = sig.id;
+            if (sig.type === 'answer') await pc.setRemoteDescription(new RTCSessionDescription(sig.payload.sdp));
+            else if (sig.type === 'ice') await pc.addIceCandidate(new RTCIceCandidate(sig.payload.candidate));
+            else if (sig.type === 'end') endCall();
+          }
+        } catch { /* ignore */ }
+      }, 1000);
+    } catch { alert('Нет доступа к камере/микрофону'); }
   };
 
   const answerCall = async (sig: { callId: string; fromId: number; fromName: string; type: 'voice' | 'video'; offer: RTCSessionDescriptionInit }) => {
     lastSigIdRef.current = 0;
     const pc = createPC(sig.callId, sig.fromId);
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: sig.type === 'video' });
-    localStreamRef.current = stream;
-    stream.getTracks().forEach(t => pc.addTrack(t, stream));
-    await pc.setRemoteDescription(new RTCSessionDescription(sig.offer));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    await sendSignal(sig.callId, sig.fromId, 'answer', { sdp: answer });
-    setCallScreen({ partnerId: sig.fromId, partnerName: sig.fromName, type: sig.type, callId: sig.callId, outgoing: false });
-    setScreen('call');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: sig.type === 'video' });
+      localStreamRef.current = stream;
+      stream.getTracks().forEach(t => pc.addTrack(t, stream));
+      await pc.setRemoteDescription(new RTCSessionDescription(sig.offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await sendSignal(sig.callId, sig.fromId, 'answer', { sdp: answer });
+      setCallScreen({ partnerId: sig.fromId, partnerName: sig.fromName, type: sig.type, callId: sig.callId, outgoing: false });
+      setScreen('call');
+    } catch { alert('Нет доступа к камере/микрофону'); }
   };
 
   const findUser = async () => {
     setFoundUser(null); setFindError('');
-    if (!findUid.trim()) return;
-    const q = encodeURIComponent(findUid.trim());
-    const r = await authFetch(`${MSG_URL}?action=find-user&q=${q}`);
-    const data = await r.json();
-    if (data.user) setFoundUser(data.user);
-    else setFindError(data.error || 'Не найден');
+    const q = findQuery.trim();
+    if (!q) return;
+    if (!tokenRef.current) { setFindError('Войдите в аккаунт'); return; }
+    try {
+      const r = await authFetch(`${MSG_URL}?action=find-user&q=${encodeURIComponent(q)}`);
+      const data = await r.json();
+      if (data.user) setFoundUser(data.user);
+      else setFindError(data.error || 'Пользователь не найден');
+    } catch { setFindError('Ошибка сети'); }
   };
 
   const startChat = async (partnerId: number) => {
-    const r = await authFetch(`${MSG_URL}?action=start-conversation`, { method: 'POST', body: JSON.stringify({ partner_id: partnerId }) });
-    const data = await r.json();
-    if (data.conversation_id) {
-      await loadConversations();
-      setTab('chats'); setFoundUser(null); setFindUid('');
-    }
+    try {
+      const r = await authFetch(`${MSG_URL}?action=start-conversation`, {
+        method: 'POST', body: JSON.stringify({ partner_id: partnerId })
+      });
+      const data = await r.json();
+      if (data.conversation_id) {
+        setTab('chats'); setFoundUser(null); setFindQuery('');
+        await loadConversations();
+      }
+    } catch { /* ignore */ }
   };
 
   const saveProfile = async () => {
-    if (!profileName.trim() || !token) return;
+    if (!profileName.trim() || !tokenRef.current) return;
     setProfileSaving(true); setProfileMsg('');
-    const r = await authFetch(`${MSG_URL}?action=update-profile`, {
-      method: 'POST',
-      body: JSON.stringify({ name: profileName.trim(), username: profileUsername.trim() })
-    });
-    const data = await r.json();
+    try {
+      const r = await authFetch(`${MSG_URL}?action=update-profile`, {
+        method: 'POST',
+        body: JSON.stringify({ name: profileName.trim(), username: profileUsername.trim() })
+      });
+      const data = await r.json();
+      if (data.ok) {
+        setProfileMsg('Сохранено!');
+        if (data.username !== undefined) { setMyUsername(data.username || ''); setProfileUsername(data.username || ''); }
+        if (data.name) setProfileName(data.name);
+      } else {
+        setProfileMsg(data.error || 'Ошибка сохранения');
+      }
+    } catch { setProfileMsg('Ошибка сети'); }
     setProfileSaving(false);
-    if (data.ok) {
-      setProfileMsg('Сохранено!');
-      if (data.username !== undefined) setProfileUsername(data.username || '');
-    } else {
-      setProfileMsg(data.error || 'Ошибка');
-    }
     setTimeout(() => setProfileMsg(''), 3000);
   };
 
@@ -323,11 +398,10 @@ export default function Index() {
   }
   if (!auth.isAuthenticated) return <AuthPage auth={auth} />;
 
-  const myUid = myUidState || authUser?.user_uid || '...';
   const myName = authUser?.name || authUser?.email || '';
   const myId = authUser?.id || 0;
 
-  // ─── CALL SCREEN ───────────────────────────────────────────
+  // ─── CALL SCREEN ───
   if (screen === 'call' && callScreen) {
     return (
       <div style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#0a0f18' }}>
@@ -354,14 +428,13 @@ export default function Index() {
     );
   }
 
-  // ─── CHAT SCREEN ───────────────────────────────────────────
+  // ─── CHAT SCREEN ───
   if (screen === 'chat' && activeConv) {
     const p = activeConv;
     return (
       <div style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: '#0e1117' }}>
-        {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: '#17212b', borderBottom: '1px solid #1f2936', flexShrink: 0, paddingTop: 'max(10px, env(safe-area-inset-top))' }}>
-          <button onClick={() => { setScreen('main'); if (pollRef.current) clearInterval(pollRef.current); }} style={{ background: 'none', border: 'none', color: '#5eadd4', cursor: 'pointer', padding: 6, flexShrink: 0 }}>
+          <button onClick={() => setScreen('main')} style={{ background: 'none', border: 'none', color: '#5eadd4', cursor: 'pointer', padding: 6, flexShrink: 0 }}>
             <Icon name="ArrowLeft" size={24} />
           </button>
           <div style={{ width: 38, height: 38, borderRadius: '50%', background: avatarColor(p.partner_id), display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 14, color: '#fff', flexShrink: 0 }}>
@@ -369,7 +442,9 @@ export default function Index() {
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ color: '#fff', fontWeight: 600, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.partner_name}</div>
-            <div style={{ color: '#8896a3', fontSize: 11 }}>ID: {p.partner_uid}</div>
+            <div style={{ color: '#8896a3', fontSize: 11 }}>
+              ID: {p.partner_uid}{p.partner_username ? ` · @${p.partner_username}` : ''}
+            </div>
           </div>
           <button onClick={() => startCall(p.partner_id, p.partner_name, 'voice')} style={{ background: 'none', border: 'none', color: '#5eadd4', cursor: 'pointer', padding: 6, flexShrink: 0 }}>
             <Icon name="Phone" size={20} />
@@ -379,7 +454,6 @@ export default function Index() {
           </button>
         </div>
 
-        {/* Messages */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '12px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
           {messages.length === 0 && (
             <div style={{ textAlign: 'center', color: '#8896a3', padding: 40, fontSize: 14 }}>
@@ -394,13 +468,14 @@ export default function Index() {
             return (
               <div key={msg.id} style={{ display: 'flex', justifyContent: msg.mine ? 'flex-end' : 'flex-start' }}>
                 <div style={{ maxWidth: '78%', padding: '8px 12px', borderRadius: msg.mine ? '16px 16px 4px 16px' : '16px 16px 16px 4px', background: msg.mine ? '#2b5278' : '#17212b', color: '#fff', fontSize: 14, lineHeight: 1.5 }}>
-                  {isVoice && voiceData ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 160 }}>
-                      <Icon name="Mic" size={15} style={{ color: '#5eadd4', flexShrink: 0 }} />
-                      <audio controls src={voiceData.url} style={{ height: 30, flex: 1, minWidth: 120 }} />
-                      <span style={{ fontSize: 11, color: '#8896a3', whiteSpace: 'nowrap' }}>{formatDuration(voiceData.duration)}</span>
-                    </div>
-                  ) : <div>{msg.content}</div>}
+                  {isVoice && voiceData
+                    ? <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 160 }}>
+                        <Icon name="Mic" size={15} style={{ color: '#5eadd4', flexShrink: 0 }} />
+                        <audio controls src={voiceData.url} style={{ height: 30, flex: 1, minWidth: 120 }} />
+                        <span style={{ fontSize: 11, color: '#8896a3', whiteSpace: 'nowrap' }}>{formatDuration(voiceData.duration)}</span>
+                      </div>
+                    : <div>{msg.content}</div>
+                  }
                   <div style={{ fontSize: 11, color: '#8896a3', textAlign: 'right', marginTop: 2 }}>
                     {formatTime(msg.created_at)}{msg.mine && <span style={{ marginLeft: 4 }}>{msg.is_read ? '✓✓' : '✓'}</span>}
                   </div>
@@ -411,7 +486,6 @@ export default function Index() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: '#17212b', borderTop: '1px solid #1f2936', flexShrink: 0, paddingBottom: 'max(8px, env(safe-area-inset-bottom))' }}>
           {recording ? (
             <>
@@ -442,37 +516,30 @@ export default function Index() {
     );
   }
 
-  // ─── MAIN SCREEN ───────────────────────────────────────────
+  // ─── MAIN SCREEN ───
   return (
     <div style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: '#0e1117' }}>
 
-      {/* Incoming call banner */}
       {incomingCall && (
-        <div style={{ background: '#1a3a5c', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+        <div style={{ background: '#1a3a5c', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, zIndex: 50 }}>
           <div style={{ flex: 1, color: '#fff', fontSize: 14 }}>
             📞 {incomingCall.type === 'video' ? 'Видеозвонок' : 'Звонок'} от <b>{incomingCall.fromName}</b>
           </div>
-          <button onClick={() => setIncomingCall(null)} style={{ background: '#e05c5c', border: 'none', borderRadius: 8, padding: '6px 12px', color: '#fff', cursor: 'pointer', fontSize: 13 }}>Откл.</button>
-          <button onClick={() => { answerCall(incomingCall!); setIncomingCall(null); }} style={{ background: '#4dbb5e', border: 'none', borderRadius: 8, padding: '6px 12px', color: '#fff', cursor: 'pointer', fontSize: 13 }}>Принять</button>
+          <button onClick={() => setIncomingCall(null)} style={{ background: '#e05c5c', border: 'none', borderRadius: 8, padding: '6px 14px', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>Откл.</button>
+          <button onClick={() => { answerCall(incomingCall); setIncomingCall(null); }} style={{ background: '#4dbb5e', border: 'none', borderRadius: 8, padding: '6px 14px', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>Принять</button>
         </div>
       )}
 
-      {/* ── CHATS ── */}
+      {/* CHATS */}
       {tab === 'chats' && (
         <>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#17212b', borderBottom: '1px solid #1f2936', flexShrink: 0, paddingTop: 'max(12px, env(safe-area-inset-top))' }}>
             <span style={{ color: '#fff', fontWeight: 700, fontSize: 20 }}>Чаты</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontSize: 11, color: '#8896a3' }}>ID: {myUid}</span>
+              {myUid && <span style={{ fontSize: 11, color: '#8896a3' }}>ID: {myUid}</span>}
               <button onClick={() => auth.logout()} style={{ background: 'none', border: 'none', color: '#8896a3', cursor: 'pointer', padding: 4 }} title="Выйти">
                 <Icon name="LogOut" size={18} />
               </button>
-            </div>
-          </div>
-          <div style={{ padding: '8px 12px', flexShrink: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', background: '#242f3d', borderRadius: 10, padding: '9px 14px', gap: 8 }}>
-              <Icon name="Search" size={16} style={{ color: '#8896a3', flexShrink: 0 }} />
-              <input placeholder="Поиск" style={{ background: 'none', border: 'none', outline: 'none', color: '#fff', fontSize: 15, flex: 1, minWidth: 0 }} />
             </div>
           </div>
           <div style={{ flex: 1, overflowY: 'auto' }}>
@@ -480,18 +547,21 @@ export default function Index() {
               <div style={{ textAlign: 'center', color: '#8896a3', padding: '48px 24px', fontSize: 14 }}>
                 <div style={{ fontSize: 44, marginBottom: 14 }}>💬</div>
                 <div style={{ fontWeight: 600, marginBottom: 6, color: '#fff' }}>Нет чатов</div>
-                Найдите друга по ID во вкладке «Поиск»
+                Найдите друга по ID или @никнейму во вкладке «Поиск»
               </div>
             )}
             {conversations.map(conv => (
-              <button key={conv.id} onClick={() => { setActiveConv(conv); setScreen('chat'); loadConversations(); }}
+              <button key={conv.id} onClick={() => { setActiveConv(conv); setScreen('chat'); }}
                 style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', width: '100%', background: 'none', border: 'none', cursor: 'pointer', borderBottom: '1px solid #1a2433', textAlign: 'left' }}>
                 <div style={{ width: 50, height: 50, borderRadius: '50%', background: avatarColor(conv.partner_id), display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 18, color: '#fff', flexShrink: 0 }}>
                   {getInitials(conv.partner_name)}
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ color: '#fff', fontWeight: 600, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{conv.partner_name}</span>
+                    <div style={{ minWidth: 0 }}>
+                      <span style={{ color: '#fff', fontWeight: 600, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>{conv.partner_name}</span>
+                      {conv.partner_username && <span style={{ color: '#5eadd4', fontSize: 12 }}>@{conv.partner_username}</span>}
+                    </div>
                     <span style={{ color: '#8896a3', fontSize: 12, flexShrink: 0, marginLeft: 8 }}>{formatTime(conv.last_message_at)}</span>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 3 }}>
@@ -507,7 +577,7 @@ export default function Index() {
         </>
       )}
 
-      {/* ── CALLS ── */}
+      {/* CALLS */}
       {tab === 'calls' && (
         <>
           <div style={{ padding: '12px 16px', background: '#17212b', borderBottom: '1px solid #1f2936', flexShrink: 0, paddingTop: 'max(12px, env(safe-area-inset-top))' }}>
@@ -539,7 +609,7 @@ export default function Index() {
         </>
       )}
 
-      {/* ── FIND ── */}
+      {/* FIND */}
       {tab === 'find' && (
         <>
           <div style={{ padding: '12px 16px', background: '#17212b', borderBottom: '1px solid #1f2936', flexShrink: 0, paddingTop: 'max(12px, env(safe-area-inset-top))' }}>
@@ -549,14 +619,15 @@ export default function Index() {
             <div style={{ background: '#17212b', borderRadius: 12, padding: 16, marginBottom: 16 }}>
               <div style={{ color: '#8896a3', fontSize: 12, marginBottom: 4 }}>Ваш ID и никнейм</div>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
-                <span style={{ color: '#5eadd4', fontWeight: 700, fontSize: 24, letterSpacing: 3 }}>{myUid}</span>
-                {profileUsername && <span style={{ color: '#a8b4c8', fontSize: 16 }}>@{profileUsername}</span>}
+                <span style={{ color: '#5eadd4', fontWeight: 700, fontSize: 26, letterSpacing: 3 }}>{myUid || '...'}</span>
+                {myUsername && <span style={{ color: '#a8b4c8', fontSize: 16 }}>@{myUsername}</span>}
               </div>
               <div style={{ color: '#8896a3', fontSize: 12, marginTop: 6 }}>Поделитесь с друзьями, чтобы они могли найти вас</div>
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <input value={findUid} onChange={e => setFindUid(e.target.value)} onKeyDown={e => e.key === 'Enter' && findUser()}
-                placeholder="ID (123456) или @никнейм"
+              <input value={findQuery} onChange={e => setFindQuery(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && findUser()}
+                placeholder="Введите ID (123456) или @ник"
                 style={{ flex: 1, background: '#242f3d', border: '1px solid #2f3f51', borderRadius: 10, padding: '12px 14px', color: '#fff', fontSize: 15, outline: 'none' }}
               />
               <button onClick={findUser} style={{ background: '#2b5278', border: 'none', borderRadius: 10, padding: '12px 18px', color: '#5eadd4', cursor: 'pointer', fontWeight: 600, fontSize: 15 }}>Найти</button>
@@ -569,8 +640,9 @@ export default function Index() {
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ color: '#fff', fontWeight: 600, fontSize: 16 }}>{foundUser.name || foundUser.email}</div>
-                  <div style={{ color: '#8896a3', fontSize: 12 }}>
-                    ID: {foundUser.user_uid}{foundUser.username ? <span style={{ marginLeft: 8, color: '#5eadd4' }}>@{foundUser.username}</span> : ''}
+                  <div style={{ color: '#8896a3', fontSize: 12, marginTop: 2 }}>
+                    ID: {foundUser.user_uid}
+                    {foundUser.username && <span style={{ marginLeft: 8, color: '#5eadd4' }}>@{foundUser.username}</span>}
                   </div>
                 </div>
                 <button onClick={() => startChat(foundUser.id)} style={{ background: '#2b5278', border: 'none', borderRadius: 10, padding: '10px 16px', color: '#5eadd4', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}>Написать</button>
@@ -580,64 +652,56 @@ export default function Index() {
         </>
       )}
 
-      {/* ── PROFILE ── */}
+      {/* PROFILE */}
       {tab === 'profile' && (
         <>
           <div style={{ padding: '12px 16px', background: '#17212b', borderBottom: '1px solid #1f2936', flexShrink: 0, paddingTop: 'max(12px, env(safe-area-inset-top))' }}>
             <span style={{ color: '#fff', fontWeight: 700, fontSize: 20 }}>Профиль</span>
           </div>
           <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-            {/* Avatar block */}
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px 0 20px' }}>
               <div style={{ width: 90, height: 90, borderRadius: '50%', background: avatarColor(myId), display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 34, color: '#fff' }}>
                 {getInitials(myName)}
               </div>
-              <div style={{ color: '#fff', fontWeight: 700, fontSize: 20, marginTop: 12 }}>{myName}</div>
-              {profileUsername && <div style={{ color: '#5eadd4', fontSize: 15, marginTop: 2 }}>@{profileUsername}</div>}
-              <div style={{ background: '#1f2d3d', borderRadius: 8, padding: '4px 14px', marginTop: 8 }}>
+              <div style={{ color: '#fff', fontWeight: 700, fontSize: 20, marginTop: 12 }}>{profileName || myName}</div>
+              {myUsername && <div style={{ color: '#5eadd4', fontSize: 15, marginTop: 4 }}>@{myUsername}</div>}
+              <div style={{ background: '#1f2d3d', borderRadius: 8, padding: '4px 16px', marginTop: 8 }}>
                 <span style={{ color: '#8896a3', fontSize: 12 }}>ID: </span>
-                <span style={{ color: '#5eadd4', fontWeight: 700, fontSize: 18, letterSpacing: 3 }}>{myUid}</span>
+                <span style={{ color: '#5eadd4', fontWeight: 700, fontSize: 18, letterSpacing: 3 }}>{myUid || '...'}</span>
               </div>
             </div>
 
-            {/* Edit name + username */}
             <div style={{ background: '#17212b', borderRadius: 12, padding: 16, marginBottom: 12 }}>
-              <div style={{ color: '#8896a3', fontSize: 12, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Ваше имя</div>
-              <input
-                value={profileName}
-                onChange={e => setProfileName(e.target.value)}
-                placeholder="Введите имя"
-                style={{ width: '100%', background: '#242f3d', border: '1px solid #2f3f51', borderRadius: 10, padding: '12px 14px', color: '#fff', fontSize: 15, outline: 'none', boxSizing: 'border-box' }}
-              />
+              <div style={{ color: '#8896a3', fontSize: 12, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Имя</div>
+              <input value={profileName} onChange={e => setProfileName(e.target.value)} placeholder="Ваше имя"
+                style={{ width: '100%', background: '#242f3d', border: '1px solid #2f3f51', borderRadius: 10, padding: '12px 14px', color: '#fff', fontSize: 15, outline: 'none', boxSizing: 'border-box' }} />
+
               <div style={{ color: '#8896a3', fontSize: 12, marginTop: 14, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Никнейм</div>
               <div style={{ position: 'relative' }}>
-                <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: '#5eadd4', fontSize: 15, fontWeight: 600 }}>@</span>
-                <input
-                  value={profileUsername}
+                <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: '#5eadd4', fontSize: 16, fontWeight: 700, pointerEvents: 'none' }}>@</span>
+                <input value={profileUsername}
                   onChange={e => setProfileUsername(e.target.value.replace(/[^a-zA-Z0-9_]/g, '').toLowerCase())}
-                  placeholder="username"
+                  placeholder="nickname"
                   maxLength={32}
-                  style={{ width: '100%', background: '#242f3d', border: '1px solid #2f3f51', borderRadius: 10, padding: '12px 14px 12px 28px', color: '#fff', fontSize: 15, outline: 'none', boxSizing: 'border-box' }}
-                />
+                  style={{ width: '100%', background: '#242f3d', border: '1px solid #2f3f51', borderRadius: 10, padding: '12px 14px 12px 30px', color: '#fff', fontSize: 15, outline: 'none', boxSizing: 'border-box' }} />
               </div>
-              <div style={{ color: '#5e6e85', fontSize: 12, marginTop: 6 }}>Только латиница, цифры и _ (3–32 символа). По нику вас смогут найти.</div>
-              {profileMsg && <div style={{ color: profileMsg === 'Сохранено!' ? '#4dbb5e' : '#e05c5c', fontSize: 13, marginTop: 8 }}>{profileMsg}</div>}
+              <div style={{ color: '#5e6e85', fontSize: 12, marginTop: 6 }}>Латиница, цифры, _ · 3–32 символа · По нику вас найдут в поиске</div>
+
+              {profileMsg && <div style={{ color: profileMsg === 'Сохранено!' ? '#4dbb5e' : '#e05c5c', fontSize: 13, marginTop: 10, fontWeight: 600 }}>{profileMsg}</div>}
               <button onClick={saveProfile} disabled={profileSaving}
-                style={{ width: '100%', background: '#2b5278', border: 'none', borderRadius: 10, padding: '13px 0', color: '#5eadd4', cursor: 'pointer', fontWeight: 600, fontSize: 15, marginTop: 12 }}>
+                style={{ width: '100%', background: '#2b5278', border: 'none', borderRadius: 10, padding: '13px 0', color: '#5eadd4', cursor: profileSaving ? 'default' : 'pointer', fontWeight: 600, fontSize: 15, marginTop: 12, opacity: profileSaving ? 0.7 : 1 }}>
                 {profileSaving ? 'Сохраняю...' : 'Сохранить'}
               </button>
             </div>
 
-            {/* Account info */}
             <div style={{ background: '#17212b', borderRadius: 12, padding: 16, marginBottom: 12 }}>
-              <div style={{ color: '#8896a3', fontSize: 12, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Аккаунт</div>
+              <div style={{ color: '#8896a3', fontSize: 12, marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>Аккаунт</div>
               <div style={{ color: '#8896a3', fontSize: 13 }}>Email</div>
               <div style={{ color: '#fff', fontSize: 15, marginBottom: 12 }}>{authUser?.email}</div>
               <div style={{ color: '#8896a3', fontSize: 13 }}>Ваш ID</div>
-              <div style={{ color: '#5eadd4', fontSize: 22, fontWeight: 700, letterSpacing: 4 }}>{myUid}</div>
+              <div style={{ color: '#5eadd4', fontSize: 24, fontWeight: 700, letterSpacing: 4 }}>{myUid || '...'}</div>
             </div>
 
-            {/* Logout */}
             <button onClick={() => auth.logout()}
               style={{ width: '100%', background: '#2a1f1f', border: '1px solid #4a2020', borderRadius: 12, padding: '14px 0', color: '#e05c5c', cursor: 'pointer', fontWeight: 600, fontSize: 15 }}>
               Выйти из аккаунта
@@ -646,7 +710,7 @@ export default function Index() {
         </>
       )}
 
-      {/* ── TAB BAR ── */}
+      {/* TAB BAR */}
       <div style={{ display: 'flex', background: '#17212b', borderTop: '1px solid #1f2936', flexShrink: 0, paddingBottom: 'env(safe-area-inset-bottom)' }}>
         {([
           { id: 'chats', icon: 'MessageCircle', label: 'Чаты', badge: conversations.reduce((s, c) => s + c.unread, 0) },
@@ -655,11 +719,11 @@ export default function Index() {
           { id: 'profile', icon: 'User', label: 'Профиль', badge: 0 },
         ] as { id: Tab; icon: string; label: string; badge: number }[]).map(item => (
           <button key={item.id} onClick={() => setTab(item.id)}
-            style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, padding: '10px 0 10px', background: 'none', border: 'none', cursor: 'pointer', color: tab === item.id ? '#5eadd4' : '#8896a3', position: 'relative' }}>
+            style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, padding: '10px 0', background: 'none', border: 'none', cursor: 'pointer', color: tab === item.id ? '#5eadd4' : '#8896a3', position: 'relative' }}>
             <div style={{ position: 'relative' }}>
               <Icon name={item.icon} size={24} />
               {item.badge > 0 && (
-                <span style={{ position: 'absolute', top: -4, right: -6, background: '#e05c5c', color: '#fff', fontSize: 10, fontWeight: 700, borderRadius: 8, padding: '1px 5px', minWidth: 16, textAlign: 'center' }}>{item.badge}</span>
+                <span style={{ position: 'absolute', top: -4, right: -8, background: '#e05c5c', color: '#fff', fontSize: 10, fontWeight: 700, borderRadius: 8, padding: '1px 5px', minWidth: 16, textAlign: 'center' }}>{item.badge}</span>
               )}
             </div>
             <span style={{ fontSize: 11, fontWeight: tab === item.id ? 600 : 400 }}>{item.label}</span>
