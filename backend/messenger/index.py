@@ -51,7 +51,7 @@ def get_user_from_token(token, db):
 
 
 def generate_uid():
-    return ''.join(random.choices(string.digits, k=8))
+    return ''.join(random.choices(string.digits, k=6))
 
 
 def handler(event: dict, context) -> dict:
@@ -228,6 +228,19 @@ def handler(event: dict, context) -> dict:
             if row[0] == user['id']:
                 return json_response({'error': 'Это вы сами'}, 400)
             return json_response({'user': {'id': row[0], 'name': row[1] or row[2], 'email': row[2], 'user_uid': row[3]}})
+
+        # === UPDATE PROFILE ===
+        elif action == 'update-profile' and event.get('httpMethod') == 'POST':
+            if not user:
+                return json_response({'error': 'Не авторизован'}, 401)
+            body = json.loads(event.get('body') or '{}')
+            name = (body.get('name') or '').strip()
+            if not name:
+                return json_response({'error': 'Имя не может быть пустым'}, 400)
+            cur = db.cursor()
+            cur.execute("UPDATE users SET name = %s, updated_at = NOW() WHERE id = %s", (name, user['id']))
+            db.commit()
+            return json_response({'ok': True, 'name': name})
 
         # === START CONVERSATION ===
         elif action == 'start-conversation' and event.get('httpMethod') == 'POST':
