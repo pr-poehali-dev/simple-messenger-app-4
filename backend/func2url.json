@@ -1,4 +1,5 @@
 {
+  "turn-config": "https://functions.poehali.dev/05e99a08-4854-46d0-96e6-2e08024b3cbb",
   "messenger": "https://functions.poehali.dev/3b8d2fac-14a7-464d-9a46-07d9f85ab395",
   "auth-email-auth": "https://functions.poehali.dev/9d23499c-1556-498e-801e-74e66d3ae884"
 }

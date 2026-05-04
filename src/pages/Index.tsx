@@ -5,6 +5,7 @@ import Icon from '@/components/ui/icon';
 
 const AUTH_URL = "https://functions.poehali.dev/9d23499c-1556-498e-801e-74e66d3ae884";
 const MSG_URL = "https://functions.poehali.dev/3b8d2fac-14a7-464d-9a46-07d9f85ab395";
+const TURN_URL = "https://functions.poehali.dev/05e99a08-4854-46d0-96e6-2e08024b3cbb";
 
 type Tab = 'chats' | 'calls' | 'find' | 'profile';
 type Screen = 'main' | 'chat' | 'call';
@@ -302,34 +303,25 @@ export default function Index() {
     setRecording(false); setRecSeconds(0);
   };
 
-  // WebRTC — все функции через refs, без circular useCallback зависимостей
-  const ICE_SERVERS = useRef([
+  // ICE серверы — загружаются динамически с бэкенда (TURN от Metered.ca)
+  const iceServersRef = useRef<RTCIceServer[]>([
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    // Рабочий публичный TURN от Xirsys (бесплатный tier)
-    {
-      urls: 'turn:global.turn.twilio.com:3478?transport=udp',
-      username: 'f4b4035eaa76f4a55de5f4351567434965b3e8f5e9a8a27f25dfbf3f19d0f2d',
-      credential: '4KiHuX4F1+N8vtnGIW3VL0cTyHJEUxOcVAK6AkEf5/E='
-    },
-    // Резервный TURN — numb.viagenie.ca (публичный, без регистрации)
-    {
-      urls: 'turn:numb.viagenie.ca',
-      username: 'webrtc@live.com',
-      credential: 'muazkh'
-    },
-    {
-      urls: 'turn:numb.viagenie.ca:3478?transport=tcp',
-      username: 'webrtc@live.com',
-      credential: 'muazkh'
-    },
-    // Ещё один резервный
-    {
-      urls: 'turn:turn.anyfirewall.com:443?transport=tcp',
-      username: 'webrtc',
-      credential: 'webrtc'
-    },
-  ]).current;
+  ]);
+
+  const fetchIceServers = useCallback(async (): Promise<RTCIceServer[]> => {
+    try {
+      const r = await fetch(TURN_URL, { headers: tokenRef.current ? { 'X-Authorization': `Bearer ${tokenRef.current}` } : {} });
+      const data = await r.json();
+      if (data.ice_servers && data.ice_servers.length > 0) {
+        iceServersRef.current = data.ice_servers;
+        console.log('[WebRTC] ICE servers loaded:', data.ice_servers.length, 'servers');
+      }
+    } catch (e) {
+      console.warn('[WebRTC] Failed to fetch ICE servers, using defaults');
+    }
+    return iceServersRef.current;
+  }, []);
 
   // sendSignal — стабильная функция через ref к токену
   const sendSignal = useCallback(async (callId: string, toUserId: number, type: string, payload: object) => {
@@ -384,7 +376,7 @@ export default function Index() {
     if (pcRef.current) { try { pcRef.current.close(); } catch { /* ignore */ } pcRef.current = null; }
 
     const pc = new RTCPeerConnection({
-      iceServers: ICE_SERVERS,
+      iceServers: iceServersRef.current,
       iceCandidatePoolSize: 10,
       bundlePolicy: 'max-bundle',
       rtcpMuxPolicy: 'require',
@@ -515,6 +507,7 @@ export default function Index() {
   const startCall = async (partnerId: number, partnerName: string, type: 'voice' | 'video') => {
     const callId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     console.log('[WebRTC] startCall', { callId, partnerId, type });
+    await fetchIceServers(); // загружаем актуальные TURN серверы
     const pc = createPC(callId, partnerId);
     try {
       console.log('[WebRTC] getUserMedia...');
@@ -553,6 +546,7 @@ export default function Index() {
 
   const answerCall = async (sig: { callId: string; fromId: number; fromName: string; type: 'voice' | 'video'; offer: RTCSessionDescriptionInit }) => {
     setIncomingCall(null);
+    await fetchIceServers(); // загружаем актуальные TURN серверы
     const pc = createPC(sig.callId, sig.fromId);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({

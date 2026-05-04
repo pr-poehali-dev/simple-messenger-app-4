@@ -1,0 +1,12 @@
+{
+  "tests": [
+    {
+      "name": "GET ice servers",
+      "method": "GET",
+      "path": "/",
+      "expectedStatus": 200,
+      "expectedBody": {"ice_servers": []},
+      "bodyMatcher": "partial"
+    }
+  ]
+}
