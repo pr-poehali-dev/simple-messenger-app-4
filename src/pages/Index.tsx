@@ -98,7 +98,7 @@ export default function Index() {
   const authFetch = useCallback(async (url: string, opts: RequestInit = {}) => {
     return fetch(url, {
       ...opts,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(opts.headers || {}) }
+      headers: { 'Content-Type': 'application/json', 'X-Authorization': `Bearer ${token}`, ...(opts.headers || {}) }
     });
   }, [token]);
 
@@ -126,6 +126,7 @@ export default function Index() {
 
   useEffect(() => { if (token) loadConversations(); }, [token, loadConversations]);
   useEffect(() => { if (tab === 'calls') loadCalls(); }, [tab, loadCalls]);
+  useEffect(() => { if (tab === 'profile' && token) loadConversations(); }, [tab, token, loadConversations]);
   useEffect(() => {
     if (authUser?.name) setProfileName(authUser.name);
     else if (authUser?.email) setProfileName(authUser.email.split('@')[0]);
@@ -293,7 +294,7 @@ export default function Index() {
   };
 
   const saveProfile = async () => {
-    if (!profileName.trim()) return;
+    if (!profileName.trim() || !token) return;
     setProfileSaving(true); setProfileMsg('');
     const r = await authFetch(`${MSG_URL}?action=update-profile`, { method: 'POST', body: JSON.stringify({ name: profileName.trim() }) });
     const data = await r.json();
