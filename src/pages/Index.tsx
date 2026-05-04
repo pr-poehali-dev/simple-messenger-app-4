@@ -55,6 +55,7 @@ export default function Index() {
 
   const [tab, setTab] = useState<Tab>('chats');
   const [screen, setScreen] = useState<Screen>('main');
+  const [myUidState, setMyUidState] = useState('');
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConv, setActiveConv] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -106,6 +107,7 @@ export default function Index() {
     const r = await authFetch(`${MSG_URL}?action=conversations`);
     const data = await r.json();
     if (data.conversations) setConversations(data.conversations);
+    if (data.user?.user_uid) setMyUidState(data.user.user_uid);
   }, [token, authFetch]);
 
   const loadMessages = useCallback(async (convId: number) => {
@@ -309,7 +311,7 @@ export default function Index() {
   }
   if (!auth.isAuthenticated) return <AuthPage auth={auth} />;
 
-  const myUid = authUser?.user_uid || '—';
+  const myUid = myUidState || authUser?.user_uid || '...';
   const myName = authUser?.name || authUser?.email || '';
   const myId = authUser?.id || 0;
 
