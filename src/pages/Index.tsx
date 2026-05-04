@@ -296,14 +296,17 @@ export default function Index() {
   const sendSignal = useCallback(async (callId: string, toUserId: number, type: string, payload: object) => {
     const t = tokenRef.current;
     if (!t) return;
+    console.log('[WebRTC] sendSignal', type, 'call:', callId);
     try {
-      await fetch(`${MSG_URL}?action=signal-send`, {
+      const r = await fetch(`${MSG_URL}?action=signal-send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Authorization': `Bearer ${t}` },
         body: JSON.stringify({ call_id: callId, to_user_id: toUserId, type, payload })
       });
-    } catch { /* ignore */ }
-  }, []); // пустые зависимости — читает tokenRef при вызове
+      const d = await r.json();
+      console.log('[WebRTC] sendSignal result:', r.status, d);
+    } catch (e) { console.error('[WebRTC] sendSignal error:', e); }
+  }, []);
 
   // endCall через ref чтобы не было stale closure в pc.onconnectionstatechange
   const endCallRef = useRef<() => void>(() => {});
@@ -349,15 +352,26 @@ export default function Index() {
 
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState;
+      console.log('[WebRTC] connectionState:', state);
       if (state === 'connected') {
         setCallStatus('connected');
         if (callDurationRef.current) clearInterval(callDurationRef.current);
         setCallDuration(0);
         callDurationRef.current = setInterval(() => setCallDuration(d => d + 1), 1000);
-      } else if (state === 'failed' || state === 'closed') {
+      } else if (state === 'failed') {
+        // failed — реальная ошибка соединения
         setCallStatus('ended');
-        setTimeout(() => endCallRef.current(), 1200);
+        setTimeout(() => endCallRef.current(), 2000);
       }
+      // 'disconnected' и 'closed' — НЕ завершаем, iOS временно уходит в disconnected
+    };
+
+    pc.onicegatheringstatechange = () => {
+      console.log('[WebRTC] iceGatheringState:', pc.iceGatheringState);
+    };
+
+    pc.onsignalingstatechange = () => {
+      console.log('[WebRTC] signalingState:', pc.signalingState);
     };
 
     pc.ontrack = e => {
@@ -377,6 +391,17 @@ export default function Index() {
   const startSigPolling = useCallback((callId: string, pc: RTCPeerConnection) => {
     if (sigPollRef.current) clearInterval(sigPollRef.current);
     lastSigIdRef.current = 0;
+    const iceCandidateBuffer: RTCIceCandidateInit[] = [];
+
+    const flushIceCandidates = async () => {
+      if (!pc.remoteDescription || iceCandidateBuffer.length === 0) return;
+      const toFlush = iceCandidateBuffer.splice(0);
+      for (const c of toFlush) {
+        try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch { /* ignore */ }
+      }
+      console.log('[WebRTC] flushed', toFlush.length, 'buffered ICE candidates');
+    };
+
     sigPollRef.current = setInterval(async () => {
       const t = tokenRef.current;
       if (!t) return;
@@ -389,19 +414,28 @@ export default function Index() {
         const data = await r.json();
         for (const sig of (data.signals || [])) {
           lastSigIdRef.current = sig.id;
+          console.log('[WebRTC] poll got:', sig.type, 'signalingState:', pc.signalingState);
           if (sig.type === 'answer') {
             if (pc.signalingState === 'have-local-offer') {
-              await pc.setRemoteDescription(new RTCSessionDescription(sig.payload.sdp));
+              try {
+                await pc.setRemoteDescription(new RTCSessionDescription(sig.payload.sdp));
+                console.log('[WebRTC] setRemoteDescription(answer) OK');
+                await flushIceCandidates(); // применяем буферизированные ICE
+              } catch (e) { console.error('[WebRTC] setRemoteDescription error:', e); }
             }
           } else if (sig.type === 'ice') {
             if (pc.remoteDescription) {
-              try { await pc.addIceCandidate(new RTCIceCandidate(sig.payload.candidate)); } catch { /* ignore */ }
+              try { await pc.addIceCandidate(new RTCIceCandidate(sig.payload.candidate)); }
+              catch { /* ignore */ }
+            } else {
+              // Буферизируем — remoteDescription ещё не установлен
+              iceCandidateBuffer.push(sig.payload.candidate);
             }
           } else if (sig.type === 'end') {
             endCallRef.current();
           }
         }
-      } catch { /* ignore */ }
+      } catch (e) { console.error('[WebRTC] poll error:', e); }
     }, 800);
   }, []);
 
@@ -425,12 +459,15 @@ export default function Index() {
 
   const startCall = async (partnerId: number, partnerName: string, type: 'voice' | 'video') => {
     const callId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    console.log('[WebRTC] startCall', { callId, partnerId, type });
     const pc = createPC(callId, partnerId);
     try {
+      console.log('[WebRTC] getUserMedia...');
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
-        video: type === 'video' ? { facingMode: 'user', width: 640, height: 480 } : false
+        video: type === 'video' ? { facingMode: 'user' } : false
       });
+      console.log('[WebRTC] getUserMedia OK, tracks:', stream.getTracks().map(t => t.kind));
       localStreamRef.current = stream;
       stream.getTracks().forEach(t => pc.addTrack(t, stream));
       if (type === 'video' && localVideoRef.current) {
@@ -439,6 +476,7 @@ export default function Index() {
       }
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      console.log('[WebRTC] offer created, sending...');
       await sendSignal(callId, partnerId, 'offer', { sdp: pc.localDescription, callType: type });
       fetch(`${MSG_URL}?action=log-call`, {
         method: 'POST',
@@ -450,7 +488,9 @@ export default function Index() {
       setCallScreen({ partnerId, partnerName, type, callId, outgoing: true });
       setScreen('call');
       startSigPolling(callId, pc);
-    } catch {
+      console.log('[WebRTC] polling started');
+    } catch (e) {
+      console.error('[WebRTC] startCall error:', e);
       pc.close();
       alert('Нет доступа к микрофону' + (type === 'video' ? '/камере' : ''));
     }
