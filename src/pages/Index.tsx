@@ -287,9 +287,12 @@ export default function Index() {
   const ICE_SERVERS = useRef([
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    // Бесплатный TURN от Metered — несколько эндпоинтов
+    { urls: 'turn:a.relay.metered.ca:80', username: 'e8dd3e4d0d7130ee4e67be3d', credential: 'uMaQFIBpFBBBPjl/' },
+    { urls: 'turn:a.relay.metered.ca:80?transport=tcp', username: 'e8dd3e4d0d7130ee4e67be3d', credential: 'uMaQFIBpFBBBPjl/' },
+    { urls: 'turn:a.relay.metered.ca:443', username: 'e8dd3e4d0d7130ee4e67be3d', credential: 'uMaQFIBpFBBBPjl/' },
+    { urls: 'turn:a.relay.metered.ca:443?transport=tcp', username: 'e8dd3e4d0d7130ee4e67be3d', credential: 'uMaQFIBpFBBBPjl/' },
   ]).current;
 
   // sendSignal — стабильная функция через ref к токену
@@ -347,7 +350,18 @@ export default function Index() {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
     pc.onicecandidate = e => {
-      if (e.candidate) sendSignal(callId, partnerId, 'ice', { candidate: e.candidate });
+      if (e.candidate) {
+        // Передаём только нужные поля, без null значений
+        const c = e.candidate;
+        sendSignal(callId, partnerId, 'ice', {
+          candidate: {
+            candidate: c.candidate,
+            sdpMid: c.sdpMid,
+            sdpMLineIndex: c.sdpMLineIndex,
+            ...(c.usernameFragment ? { usernameFragment: c.usernameFragment } : {})
+          }
+        });
+      }
     };
 
     pc.onconnectionstatechange = () => {
