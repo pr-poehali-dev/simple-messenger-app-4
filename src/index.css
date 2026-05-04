@@ -4,98 +4,575 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    --background: 222 20% 8%;
+    --foreground: 210 20% 92%;
 
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card: 222 20% 8%;
+    --card-foreground: 210 20% 92%;
 
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
+    --popover: 222 20% 10%;
+    --popover-foreground: 210 20% 92%;
 
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
+    --primary: 195 80% 52%;
+    --primary-foreground: 222 20% 8%;
 
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 222 18% 14%;
+    --secondary-foreground: 210 20% 80%;
 
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
+    --muted: 222 18% 14%;
+    --muted-foreground: 215 15% 50%;
 
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
+    --accent: 195 80% 52%;
+    --accent-foreground: 222 20% 8%;
 
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 210 20% 98%;
 
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --border: 222 18% 16%;
+    --input: 222 18% 14%;
+    --ring: 195 80% 52%;
 
-    --radius: 0.5rem;
+    --radius: 0.75rem;
 
-    --sidebar-background: 0 0% 98%;
+    --sidebar-background: 222 22% 6%;
+    --sidebar-foreground: 215 15% 55%;
+    --sidebar-primary: 195 80% 52%;
+    --sidebar-primary-foreground: 222 20% 8%;
+    --sidebar-accent: 222 18% 14%;
+    --sidebar-accent-foreground: 210 20% 80%;
+    --sidebar-border: 222 18% 12%;
+    --sidebar-ring: 195 80% 52%;
 
-    --sidebar-foreground: 240 5.3% 26.1%;
-
-    --sidebar-primary: 240 5.9% 10%;
-
-    --sidebar-primary-foreground: 0 0% 98%;
-
-    --sidebar-accent: 240 4.8% 95.9%;
-
-    --sidebar-accent-foreground: 240 5.9% 10%;
-
-    --sidebar-border: 220 13% 91%;
-
-    --sidebar-ring: 217.2 91.2% 59.8%;
-  }
-
-  .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
-    --sidebar-background: 240 5.9% 10%;
-    --sidebar-foreground: 240 4.8% 95.9%;
-    --sidebar-primary: 224.3 76.3% 48%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 240 3.7% 15.9%;
-    --sidebar-accent-foreground: 240 4.8% 95.9%;
-    --sidebar-border: 240 3.7% 15.9%;
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    /* Custom design tokens */
+    --surface-0: #0b0f1a;
+    --surface-1: #0f1420;
+    --surface-2: #151c2e;
+    --surface-3: #1c2538;
+    --surface-hover: #1f2a3e;
+    --accent: #22d3ee;
+    --accent-dim: rgba(34, 211, 238, 0.12);
+    --accent-glow: rgba(34, 211, 238, 0.25);
+    --text-primary: #e8edf5;
+    --text-secondary: #a8b4c8;
+    --text-muted: #5e6e85;
+    --border-subtle: rgba(255, 255, 255, 0.05);
+    --border-default: rgba(255, 255, 255, 0.08);
   }
 }
 
 @layer base {
   * {
     @apply border-border;
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    overflow: hidden;
   }
 
   body {
-    @apply bg-background text-foreground;
+    background: var(--surface-0);
+    color: var(--text-primary);
+    font-family: "Golos Text", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::-webkit-scrollbar {
+    width: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--surface-3);
+    border-radius: 2px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
+  }
+}
+
+@layer components {
+  /* Layout */
+  .messenger-root {
+    display: grid;
+    grid-template-columns: 64px 300px 1fr;
+    height: 100vh;
+    background: var(--surface-0);
+    overflow: hidden;
+  }
+
+  /* Sidebar */
+  .sidebar-nav {
+    background: var(--surface-1);
+    border-right: 1px solid var(--border-subtle);
+    width: 64px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 1.25rem 0;
+    gap: 0.25rem;
+  }
+
+  .bg-accent-gradient {
+    background: linear-gradient(135deg, #22d3ee, #0ea5e9);
+  }
+
+  .nav-btn {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    transition: all 0.15s ease;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .nav-btn:hover {
+    background: var(--surface-2);
+    color: var(--text-secondary);
+  }
+
+  .nav-btn.active {
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .nav-tooltip {
+    position: absolute;
+    left: calc(100% + 12px);
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--surface-3);
+    color: var(--text-primary);
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 8px;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    z-index: 100;
+    border: 1px solid var(--border-default);
+  }
+
+  .nav-btn:hover .nav-tooltip {
+    opacity: 1;
+  }
+
+  .notif-badge {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 16px;
+    height: 16px;
+    background: var(--accent);
+    color: var(--surface-0);
+    font-size: 9px;
+    font-weight: 700;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Panels */
+  .panel-left {
+    background: var(--surface-1);
+    border-right: 1px solid var(--border-subtle);
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .panel-chat {
+    background: var(--surface-0);
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background-image:
+      radial-gradient(
+        circle at 80% 20%,
+        rgba(34, 211, 238, 0.03) 0%,
+        transparent 50%
+      ),
+      radial-gradient(
+        circle at 20% 80%,
+        rgba(99, 102, 241, 0.03) 0%,
+        transparent 50%
+      );
+  }
+
+  .panel-section {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  /* Search input */
+  .search-input {
+    width: 100%;
+    background: var(--surface-2);
+    border: 1px solid var(--border-default);
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 13px;
+    color: var(--text-primary);
+    font-family: "Golos Text", sans-serif;
+    outline: none;
+    transition: border-color 0.15s ease;
+  }
+
+  .search-input::placeholder {
+    color: var(--text-muted);
+  }
+
+  .search-input:focus {
+    border-color: var(--accent-glow);
+  }
+
+  /* Filter chips */
+  .filter-chip {
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    border: 1px solid var(--border-default);
+    color: var(--text-muted);
+    background: transparent;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    font-family: "Golos Text", sans-serif;
+  }
+
+  .filter-chip:hover {
+    color: var(--text-secondary);
+    border-color: var(--border-subtle);
+    background: var(--surface-2);
+  }
+
+  .filter-chip.active {
+    background: var(--accent-dim);
+    border-color: rgba(34, 211, 238, 0.3);
+    color: var(--accent);
+  }
+
+  /* Dialog item */
+  .dialog-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background 0.12s ease;
+    border: none;
+    background: transparent;
+    font-family: "Golos Text", sans-serif;
+  }
+
+  .dialog-item:hover {
+    background: var(--surface-hover);
+  }
+
+  .dialog-item.active {
+    background: var(--accent-dim);
+  }
+
+  /* Contact item */
+  .contact-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 12px;
+    transition: background 0.12s ease;
+  }
+
+  .contact-item:hover {
+    background: var(--surface-hover);
+  }
+
+  /* Unread badge */
+  .unread-badge {
+    min-width: 18px;
+    height: 18px;
+    background: var(--accent);
+    color: var(--surface-0);
+    font-size: 10px;
+    font-weight: 700;
+    border-radius: 9px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+    flex-shrink: 0;
+  }
+
+  /* Icon buttons */
+  .icon-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .icon-btn:hover {
+    background: var(--surface-2);
+    color: var(--text-secondary);
+  }
+
+  .icon-btn-sm {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+  }
+
+  .icon-btn-sm:hover {
+    background: var(--surface-2);
+    color: var(--text-secondary);
+  }
+
+  /* Chat */
+  .chat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--surface-1);
+  }
+
+  .message-bubble {
+    max-width: 72%;
+    padding: 10px 14px;
+    border-radius: 16px;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .message-bubble.mine {
+    background: linear-gradient(135deg, #0e7490, #0891b2);
+    color: #fff;
+    border-bottom-right-radius: 4px;
+  }
+
+  .message-bubble.theirs {
+    background: var(--surface-2);
+    color: var(--text-primary);
+    border-bottom-left-radius: 4px;
+    border: 1px solid var(--border-default);
+  }
+
+  .chat-input-area {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--surface-1);
+  }
+
+  .chat-input {
+    flex: 1;
+    background: var(--surface-2);
+    border: 1px solid var(--border-default);
+    border-radius: 12px;
+    padding: 10px 14px;
+    font-size: 14px;
+    color: var(--text-primary);
+    font-family: "Golos Text", sans-serif;
+    outline: none;
+    transition: border-color 0.15s ease;
+  }
+
+  .chat-input::placeholder {
+    color: var(--text-muted);
+  }
+
+  .chat-input:focus {
+    border-color: rgba(34, 211, 238, 0.3);
+  }
+
+  .send-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #22d3ee, #0891b2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition:
+      opacity 0.15s ease,
+      transform 0.1s ease;
+  }
+
+  .send-btn:hover {
+    opacity: 0.9;
+    transform: scale(1.05);
+  }
+
+  /* Call action buttons */
+  .call-action-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-default);
+    border-radius: 12px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-family: "Golos Text", sans-serif;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .call-action-btn:hover {
+    background: var(--surface-3);
+    color: var(--text-primary);
+  }
+
+  /* Profile field */
+  .profile-field {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: var(--surface-2);
+    border-radius: 12px;
+    border: 1px solid var(--border-subtle);
+  }
+
+  /* Settings */
+  .settings-group {
+    background: var(--surface-2);
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+  }
+
+  .settings-link {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 14px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-family: "Golos Text", sans-serif;
+    background: transparent;
+    border: none;
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.12s ease;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .settings-link:last-child {
+    border-bottom: none;
+  }
+
+  .settings-link:hover {
+    background: var(--surface-hover);
+    color: var(--text-primary);
+  }
+
+  /* Toggle switch */
+  .toggle {
+    width: 36px;
+    height: 20px;
+    border-radius: 10px;
+    position: relative;
+    border: none;
+    cursor: pointer;
+    transition: background 0.2s ease;
+    flex-shrink: 0;
+  }
+
+  .toggle.on {
+    background: var(--accent);
+  }
+
+  .toggle.off {
+    background: var(--surface-3);
+  }
+
+  .toggle-thumb {
+    position: absolute;
+    top: 3px;
+    width: 14px;
+    height: 14px;
+    background: white;
+    border-radius: 50%;
+    transition: left 0.2s ease;
+  }
+
+  .toggle.on .toggle-thumb {
+    left: 19px;
+  }
+
+  .toggle.off .toggle-thumb {
+    left: 3px;
+  }
+
+  /* Theme button */
+  .theme-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 6px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-default);
+    border-radius: 12px;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-family: "Golos Text", sans-serif;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .theme-btn:hover {
+    background: var(--surface-3);
+  }
+
+  .theme-btn.active {
+    border-color: rgba(34, 211, 238, 0.4);
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
   }
 }
