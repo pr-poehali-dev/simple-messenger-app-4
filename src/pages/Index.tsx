@@ -39,7 +39,7 @@ export default function Index() {
   }
 
   if (!auth.isAuthenticated) {
-    return <AuthPage onSuccess={() => {}} />;
+    return <AuthPage auth={auth} />;
   }
 
   const hasChatPanel = activeSection === 'dialogs';
