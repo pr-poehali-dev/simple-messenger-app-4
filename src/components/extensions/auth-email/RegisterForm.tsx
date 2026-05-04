@@ -175,68 +175,41 @@ export function RegisterForm({
     return (
       <Card className={className}>
         <CardHeader className="space-y-1">
-          <CardTitle className="text-2xl">Подтверждение email</CardTitle>
+          <CardTitle className="text-2xl">Проверьте почту</CardTitle>
           <CardDescription>
-            Введите 6-значный код, отправленный на {email}
+            Письмо со ссылкой отправлено на {email}
           </CardDescription>
         </CardHeader>
-        <form onSubmit={handleVerify}>
-          <CardContent className="space-y-4">
-            {message && (
-              <div className="text-sm text-green-600 bg-green-50 p-3 rounded-md">
-                {message}
-              </div>
-            )}
-
-            {displayError && (
-              <div className="text-sm text-destructive bg-destructive/10 p-3 rounded-md">
-                {displayError}
-              </div>
-            )}
-
-            <div className="flex justify-center py-4">
-              <InputOTP
-                maxLength={6}
-                value={code}
-                onChange={setCode}
-                disabled={isLoading}
-              >
-                <InputOTPGroup>
-                  <InputOTPSlot index={0} />
-                  <InputOTPSlot index={1} />
-                  <InputOTPSlot index={2} />
-                  <InputOTPSlot index={3} />
-                  <InputOTPSlot index={4} />
-                  <InputOTPSlot index={5} />
-                </InputOTPGroup>
-              </InputOTP>
-            </div>
-          </CardContent>
-
-          <CardFooter className="flex flex-col space-y-4">
-            <Button type="submit" className="w-full" disabled={isLoading || code.length !== 6}>
-              {isLoading ? "Проверка..." : "Подтвердить"}
-            </Button>
-
-            <div className="flex items-center justify-between w-full text-sm">
-              <button
-                type="button"
-                onClick={() => setStep("register")}
-                className="text-muted-foreground hover:text-primary"
-              >
-                ← Назад
-              </button>
-              <button
-                type="button"
-                onClick={handleResend}
-                disabled={isLoading || isResending}
-                className="text-primary hover:underline underline-offset-4 disabled:opacity-50"
-              >
-                {isResending ? "Отправка..." : "Отправить код повторно"}
-              </button>
-            </div>
-          </CardFooter>
-        </form>
+        <CardContent className="space-y-4">
+          <div style={{ textAlign: 'center', padding: '20px 0' }}>
+            <div style={{ fontSize: 56, marginBottom: 12 }}>📧</div>
+            <p style={{ color: '#a8b4c8', fontSize: 14, lineHeight: 1.6 }}>
+              Откройте письмо и нажмите кнопку<br />
+              <strong style={{ color: '#fff' }}>«Подтвердить email»</strong>
+            </p>
+            <p style={{ color: '#5e6e85', fontSize: 12, marginTop: 12 }}>
+              Ссылка действительна 24 часа
+            </p>
+          </div>
+        </CardContent>
+        <CardFooter className="flex flex-col space-y-4">
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full"
+            onClick={handleResend}
+            disabled={isResending}
+          >
+            {isResending ? "Отправка..." : "Отправить письмо повторно"}
+          </Button>
+          <button
+            type="button"
+            onClick={() => setStep("register")}
+            className="text-sm text-muted-foreground hover:text-primary"
+          >
+            ← Изменить email
+          </button>
+        </CardFooter>
       </Card>
     );
   }

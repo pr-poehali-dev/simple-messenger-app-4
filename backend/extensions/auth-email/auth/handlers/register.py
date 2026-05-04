@@ -11,8 +11,8 @@ from utils.http import response, error
 VERIFICATION_CODE_HOURS = 24
 
 
-def _send_verification_code(user_id: int, email: str, S: str) -> dict:
-    """Generate and send verification code, return result dict."""
+def _send_verification_code(user_id: int, email: str, S: str, app_url: str = '') -> dict:
+    """Generate and send verification link, return result dict."""
     now = datetime.utcnow().isoformat()
     code = generate_code()
     expires_at = (datetime.utcnow() + timedelta(hours=VERIFICATION_CODE_HOURS)).isoformat()
@@ -26,9 +26,23 @@ def _send_verification_code(user_id: int, email: str, S: str) -> dict:
         VALUES ({escape(user_id)}, {escape(code)}, {escape(expires_at)}, {escape(now)})
     """)
 
-    if send_verification_code(email, code):
-        return {'message': 'Код подтверждения отправлен на email', 'sent': True}
-    return {'message': 'Не удалось отправить код', 'sent': False}
+    if send_verification_code(email, code, app_url):
+        return {'message': 'Ссылка для подтверждения отправлена на email', 'sent': True}
+    return {'message': 'Не удалось отправить письмо', 'sent': False}
+
+
+def _get_app_url(event: dict) -> str:
+    """Extract app base URL from request headers."""
+    headers = event.get('headers') or {}
+    referer = headers.get('Referer') or headers.get('referer') or ''
+    origin = headers.get('Origin') or headers.get('origin') or ''
+    if referer:
+        from urllib.parse import urlparse
+        p = urlparse(referer)
+        return f"{p.scheme}://{p.netloc}"
+    if origin and origin != '*':
+        return origin
+    return ''
 
 
 def handle(event: dict, origin: str = '*') -> dict:
@@ -49,6 +63,7 @@ def handle(event: dict, origin: str = '*') -> dict:
 
     S = get_schema()
     email_enabled = is_email_enabled()
+    app_url = _get_app_url(event)
 
     # Check if user exists
     existing = query_one(f"SELECT id, email_verified, password_hash FROM {S}users WHERE email = {escape(email)}")
@@ -64,9 +79,9 @@ def handle(event: dict, origin: str = '*') -> dict:
         if not verify_password(password, stored_hash):
             return error(409, 'Пользователь с таким email уже существует', origin)
 
-        # Password correct - resend code
+        # Password correct - resend link
         if email_enabled:
-            send_result = _send_verification_code(user_id, email, S)
+            send_result = _send_verification_code(user_id, email, S, app_url)
             return response(200, {
                 'user_id': user_id,
                 'message': send_result['message'],
@@ -99,9 +114,9 @@ def handle(event: dict, origin: str = '*') -> dict:
         'email_verification_required': email_enabled
     }
 
-    # Send verification code if SMTP configured
+    # Send verification link if SMTP configured
     if email_enabled:
-        send_result = _send_verification_code(user_id, email, S)
+        send_result = _send_verification_code(user_id, email, S, app_url)
         result['message'] = send_result['message']
 
     return response(201, result, origin)

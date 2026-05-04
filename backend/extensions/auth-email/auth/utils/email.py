@@ -45,26 +45,33 @@ def send_email(to_email: str, subject: str, html_body: str, text_body: str) -> b
         return False
 
 
-def send_verification_code(to_email: str, code: str) -> bool:
-    """Send email verification code."""
-    subject = "Код подтверждения"
+def send_verification_code(to_email: str, code: str, app_url: str = '') -> bool:
+    """Send email verification link."""
+    import urllib.parse
+    subject = "Подтверждение регистрации"
+
+    encoded_email = urllib.parse.quote(to_email)
+    verify_url = f"{app_url}?verify={code}&email={encoded_email}"
 
     html_body = f"""
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2>Подтверждение email</h2>
-        <p>Ваш код подтверждения:</p>
-        <p style="font-size: 32px; font-weight: bold; letter-spacing: 8px;
-                  background: #f5f5f5; padding: 20px; text-align: center;
-                  border-radius: 8px; margin: 20px 0;">
-            {code}
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #0e1117; color: #e8edf5; padding: 40px 30px; border-radius: 16px;">
+        <h2 style="color: #5eadd4; margin-bottom: 8px;">Подтверждение регистрации</h2>
+        <p style="color: #a8b4c8; margin-bottom: 30px;">Нажмите кнопку ниже, чтобы подтвердить email и войти в аккаунт:</p>
+        <a href="{verify_url}"
+           style="display: inline-block; background: #2b5278; color: #5eadd4;
+                  text-decoration: none; padding: 14px 32px; border-radius: 10px;
+                  font-size: 16px; font-weight: 600; margin-bottom: 24px;">
+            Подтвердить email
+        </a>
+        <p style="color: #5e6e85; font-size: 13px; margin-top: 24px;">
+            Ссылка действительна 24 часа.<br>
+            Если вы не регистрировались — проигнорируйте это письмо.
         </p>
-        <p style="color: #666; font-size: 14px;">
-            Код действителен 24 часа. Если вы не регистрировались — проигнорируйте это письмо.
-        </p>
+        <p style="color: #5e6e85; font-size: 12px;">Или скопируйте ссылку: {verify_url}</p>
     </div>
     """
 
-    text_body = f"Ваш код подтверждения: {code}"
+    text_body = f"Подтвердите регистрацию, перейдя по ссылке:\n{verify_url}\n\nСсылка действительна 24 часа."
 
     return send_email(to_email, subject, html_body, text_body)
 
