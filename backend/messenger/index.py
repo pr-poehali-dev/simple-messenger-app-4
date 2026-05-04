@@ -1,16 +1,26 @@
 """
-Основная функция мессенджера: сообщения, диалоги, поиск по ID, звонки
+Мессенджер: сообщения, диалоги, голосовые, WebRTC сигналинг, поиск по ID
 """
 import json
 import os
 import random
 import string
+import base64
 import psycopg2
-from datetime import datetime
+import boto3
 
 
 def get_db():
     return psycopg2.connect(os.environ['DATABASE_URL'])
+
+
+def get_s3():
+    return boto3.client(
+        's3',
+        endpoint_url='https://bucket.poehali.dev',
+        aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+        aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY']
+    )
 
 
 def json_response(data, status=200):
@@ -124,12 +134,10 @@ def handler(event: dict, context) -> dict:
             if not conv_id:
                 return json_response({'error': 'conversation_id обязателен'}, 400)
             cur = db.cursor()
-            # Проверяем доступ
             cur.execute("SELECT id FROM conversations WHERE id = %s AND (user1_id = %s OR user2_id = %s)",
                         (conv_id, user['id'], user['id']))
             if not cur.fetchone():
                 return json_response({'error': 'Нет доступа'}, 403)
-            # Отмечаем как прочитанные
             cur.execute("UPDATE messages SET is_read = true WHERE conversation_id = %s AND sender_id != %s",
                         (conv_id, user['id']))
             db.commit()
@@ -170,6 +178,40 @@ def handler(event: dict, context) -> dict:
             db.commit()
             return json_response({'id': msg_id, 'created_at': created_at, 'sender_id': user['id']})
 
+        # === UPLOAD VOICE ===
+        elif action == 'upload-voice' and event.get('httpMethod') == 'POST':
+            if not user:
+                return json_response({'error': 'Не авторизован'}, 401)
+            body = json.loads(event.get('body') or '{}')
+            conversation_id = body.get('conversation_id')
+            audio_b64 = body.get('audio')
+            duration = body.get('duration', 0)
+            if not conversation_id or not audio_b64:
+                return json_response({'error': 'conversation_id и audio обязательны'}, 400)
+            cur = db.cursor()
+            cur.execute("SELECT id FROM conversations WHERE id = %s AND (user1_id = %s OR user2_id = %s)",
+                        (conversation_id, user['id'], user['id']))
+            if not cur.fetchone():
+                return json_response({'error': 'Нет доступа'}, 403)
+
+            # Загружаем в S3
+            audio_data = base64.b64decode(audio_b64)
+            key = f"voice/{user['id']}/{random.randint(100000, 999999)}.webm"
+            s3 = get_s3()
+            s3.put_object(Bucket='files', Key=key, Body=audio_data, ContentType='audio/webm')
+            access_key = os.environ['AWS_ACCESS_KEY_ID']
+            cdn_url = f"https://cdn.poehali.dev/projects/{access_key}/bucket/{key}"
+
+            content = json.dumps({'url': cdn_url, 'duration': duration})
+            cur.execute("""
+                INSERT INTO messages (conversation_id, sender_id, content, type)
+                VALUES (%s, %s, %s, 'voice') RETURNING id, created_at
+            """, (conversation_id, user['id'], content))
+            msg_id, created_at = cur.fetchone()
+            cur.execute("UPDATE conversations SET last_message_at = NOW() WHERE id = %s", (conversation_id,))
+            db.commit()
+            return json_response({'id': msg_id, 'created_at': created_at, 'url': cdn_url})
+
         # === FIND USER BY UID ===
         elif action == 'find-user' and event.get('httpMethod') == 'GET':
             if not user:
@@ -206,6 +248,57 @@ def handler(event: dict, context) -> dict:
             db.commit()
             return json_response({'conversation_id': conv_id})
 
+        # === WEBRTC SIGNAL SEND ===
+        elif action == 'signal-send' and event.get('httpMethod') == 'POST':
+            if not user:
+                return json_response({'error': 'Не авторизован'}, 401)
+            body = json.loads(event.get('body') or '{}')
+            call_id = body.get('call_id')
+            to_user_id = body.get('to_user_id')
+            sig_type = body.get('type')
+            raw_payload = body.get('payload', {})
+            payload = json.dumps(raw_payload)
+            cur = db.cursor()
+            cur.execute("""
+                INSERT INTO webrtc_signals (call_id, from_user_id, to_user_id, type, payload)
+                VALUES (%s, %s, %s, %s, %s) RETURNING id
+            """, (call_id, user['id'], to_user_id, sig_type, payload))
+            sig_id = cur.fetchone()[0]
+            # Если offer — дублируем на incoming канал получателя
+            if sig_type == 'offer':
+                incoming_payload = json.dumps({
+                    'callId': call_id,
+                    'fromName': user.get('name') or user.get('email'),
+                    'callType': raw_payload.get('callType', 'voice'),
+                    'sdp': raw_payload.get('sdp')
+                })
+                incoming_call_id = f"incoming-{to_user_id}"
+                cur.execute("""
+                    INSERT INTO webrtc_signals (call_id, from_user_id, to_user_id, type, payload)
+                    VALUES (%s, %s, %s, 'offer', %s)
+                """, (incoming_call_id, user['id'], to_user_id, incoming_payload))
+            db.commit()
+            return json_response({'ok': True, 'id': sig_id})
+
+        # === WEBRTC SIGNAL POLL ===
+        elif action == 'signal-poll' and event.get('httpMethod') == 'GET':
+            if not user:
+                return json_response({'error': 'Не авторизован'}, 401)
+            params = event.get('queryStringParameters') or {}
+            call_id = params.get('call_id')
+            after_id = int(params.get('after_id', 0))
+            cur = db.cursor()
+            cur.execute("""
+                SELECT id, from_user_id, type, payload, created_at
+                FROM webrtc_signals
+                WHERE call_id = %s AND to_user_id = %s AND id > %s
+                ORDER BY id ASC LIMIT 20
+            """, (call_id, user['id'], after_id))
+            rows = cur.fetchall()
+            signals = [{'id': r[0], 'from_user_id': r[1], 'type': r[2],
+                        'payload': json.loads(r[3]), 'created_at': r[4]} for r in rows]
+            return json_response({'signals': signals})
+
         # === LOG CALL ===
         elif action == 'log-call' and event.get('httpMethod') == 'POST':
             if not user:
@@ -236,8 +329,7 @@ def handler(event: dict, context) -> dict:
                 FROM calls c
                 JOIN users u ON u.id = CASE WHEN c.caller_id = %s THEN c.callee_id ELSE c.caller_id END
                 WHERE c.caller_id = %s OR c.callee_id = %s
-                ORDER BY c.started_at DESC
-                LIMIT 50
+                ORDER BY c.started_at DESC LIMIT 50
             """, (user['id'], user['id'], user['id'], user['id'], user['id']))
             rows = cur.fetchall()
             calls = [{'id': r[0], 'type': r[1], 'status': r[2], 'started_at': r[3],
