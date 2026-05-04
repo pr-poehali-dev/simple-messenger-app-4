@@ -39,7 +39,11 @@ def get_user_from_token(token, db):
     secret = os.environ.get('JWT_SECRET', '')
     try:
         payload = jwt.decode(token, secret, algorithms=['HS256'])
-        user_id = payload.get('user_id')
+        # Токен создаётся с полем 'sub', не 'user_id'
+        user_id = payload.get('sub') or payload.get('user_id')
+        if not user_id:
+            return None
+        user_id = int(user_id)
         cur = db.cursor()
         cur.execute("SELECT id, email, name, user_uid, username FROM users WHERE id = %s", (user_id,))
         row = cur.fetchone()
@@ -69,8 +73,15 @@ def handler(event: dict, context) -> dict:
 
     action = (event.get('queryStringParameters') or {}).get('action', '')
     headers = event.get('headers') or {}
-    auth_header = headers.get('X-Authorization') or headers.get('Authorization') or ''
-    token = auth_header.replace('Bearer ', '').strip()
+    # Платформа может передавать заголовки в любом регистре — проверяем все варианты
+    auth_header = (
+        headers.get('X-Authorization') or
+        headers.get('x-authorization') or
+        headers.get('Authorization') or
+        headers.get('authorization') or
+        ''
+    )
+    token = auth_header.replace('Bearer ', '').replace('bearer ', '').strip()
 
     db = get_db()
     try:
