@@ -283,79 +283,64 @@ export default function Index() {
     setRecording(false); setRecSeconds(0);
   };
 
-  // WebRTC
-  // ICE серверы — STUN + публичный TURN для прохождения через NAT/мобильный интернет
-  const ICE_SERVERS = [
+  // WebRTC — все функции через refs, без circular useCallback зависимостей
+  const ICE_SERVERS = useRef([
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
     { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
     { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-  ];
+  ]).current;
 
+  // sendSignal — стабильная функция через ref к токену
   const sendSignal = useCallback(async (callId: string, toUserId: number, type: string, payload: object) => {
-    if (!tokenRef.current) return;
+    const t = tokenRef.current;
+    if (!t) return;
     try {
       await fetch(`${MSG_URL}?action=signal-send`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Authorization': `Bearer ${tokenRef.current}` },
+        headers: { 'Content-Type': 'application/json', 'X-Authorization': `Bearer ${t}` },
         body: JSON.stringify({ call_id: callId, to_user_id: toUserId, type, payload })
       });
     } catch { /* ignore */ }
-  }, []);
+  }, []); // пустые зависимости — читает tokenRef при вызове
 
-  const stopCallTimer = useCallback(() => {
-    if (callDurationRef.current) { clearInterval(callDurationRef.current); callDurationRef.current = null; }
-  }, []);
-
-  const startCallTimer = useCallback(() => {
-    setCallDuration(0);
-    callDurationRef.current = setInterval(() => setCallDuration(d => d + 1), 1000);
-  }, []);
+  // endCall через ref чтобы не было stale closure в pc.onconnectionstatechange
+  const endCallRef = useRef<() => void>(() => {});
 
   const endCall = useCallback(() => {
     if (sigPollRef.current) { clearInterval(sigPollRef.current); sigPollRef.current = null; }
-    stopCallTimer();
+    if (callDurationRef.current) { clearInterval(callDurationRef.current); callDurationRef.current = null; }
     if (pcRef.current) { pcRef.current.close(); pcRef.current = null; }
     if (localStreamRef.current) { localStreamRef.current.getTracks().forEach(t => t.stop()); localStreamRef.current = null; }
+    if (remoteAudioRef.current) { remoteAudioRef.current.srcObject = null; }
+    if (remoteVideoRef.current) { remoteVideoRef.current.srcObject = null; }
+    if (localVideoRef.current) { localVideoRef.current.srcObject = null; }
     setCallScreen(prev => {
-      if (prev) sendSignal(prev.callId, prev.partnerId, 'end', {});
+      if (prev) {
+        const t = tokenRef.current;
+        if (t) fetch(`${MSG_URL}?action=signal-send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Authorization': `Bearer ${t}` },
+          body: JSON.stringify({ call_id: prev.callId, to_user_id: prev.partnerId, type: 'end', payload: {} })
+        }).catch(() => {});
+      }
       return null;
     });
     setCallStatus('calling');
     setIsMuted(false);
     setIsCameraOff(false);
+    setCallDuration(0);
     setScreen('main');
-  }, [sendSignal, stopCallTimer]);
+  }, []); // пустые зависимости — всё через refs
 
-  // Запуск поллинга сигналов для звонка (работает для обеих сторон)
-  const startSigPolling = useCallback((callId: string, pc: RTCPeerConnection) => {
-    if (sigPollRef.current) clearInterval(sigPollRef.current);
-    lastSigIdRef.current = 0;
-    sigPollRef.current = setInterval(async () => {
-      if (!tokenRef.current) return;
-      try {
-        const r = await fetch(
-          `${MSG_URL}?action=signal-poll&call_id=${callId}&after_id=${lastSigIdRef.current}`,
-          { headers: { 'X-Authorization': `Bearer ${tokenRef.current}` } }
-        );
-        if (!r.ok) return;
-        const data = await r.json();
-        for (const sig of (data.signals || [])) {
-          lastSigIdRef.current = sig.id;
-          if (sig.type === 'answer' && pc.signalingState !== 'stable') {
-            await pc.setRemoteDescription(new RTCSessionDescription(sig.payload.sdp));
-          } else if (sig.type === 'ice') {
-            try { await pc.addIceCandidate(new RTCIceCandidate(sig.payload.candidate)); } catch { /* ignore */ }
-          } else if (sig.type === 'end') {
-            endCall();
-          }
-        }
-      } catch { /* ignore */ }
-    }, 800);
-  }, [endCall]);
+  // Обновляем ref при каждом рендере
+  endCallRef.current = endCall;
 
   const createPC = useCallback((callId: string, partnerId: number) => {
+    // Закрываем старый если есть
+    if (pcRef.current) { try { pcRef.current.close(); } catch { /* ignore */ } pcRef.current = null; }
+
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
     pc.onicecandidate = e => {
@@ -363,18 +348,21 @@ export default function Index() {
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'connected') {
+      const state = pc.connectionState;
+      if (state === 'connected') {
         setCallStatus('connected');
-        startCallTimer();
-      } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        if (callDurationRef.current) clearInterval(callDurationRef.current);
+        setCallDuration(0);
+        callDurationRef.current = setInterval(() => setCallDuration(d => d + 1), 1000);
+      } else if (state === 'failed' || state === 'closed') {
         setCallStatus('ended');
-        setTimeout(endCall, 1500);
+        setTimeout(() => endCallRef.current(), 1200);
       }
     };
 
     pc.ontrack = e => {
-      const stream = e.streams[0];
-      if (remoteAudioRef.current && !remoteAudioRef.current.srcObject) {
+      const stream = e.streams[0] || new MediaStream([e.track]);
+      if (remoteAudioRef.current) {
         remoteAudioRef.current.srcObject = stream;
         remoteAudioRef.current.play().catch(() => {});
       }
@@ -383,7 +371,39 @@ export default function Index() {
 
     pcRef.current = pc;
     return pc;
-  }, [sendSignal, startCallTimer, endCall]); // eslint-disable-line
+  }, [sendSignal, ICE_SERVERS]);
+
+  // Поллинг сигналов — одна функция для обеих сторон
+  const startSigPolling = useCallback((callId: string, pc: RTCPeerConnection) => {
+    if (sigPollRef.current) clearInterval(sigPollRef.current);
+    lastSigIdRef.current = 0;
+    sigPollRef.current = setInterval(async () => {
+      const t = tokenRef.current;
+      if (!t) return;
+      try {
+        const r = await fetch(
+          `${MSG_URL}?action=signal-poll&call_id=${callId}&after_id=${lastSigIdRef.current}`,
+          { headers: { 'X-Authorization': `Bearer ${t}` } }
+        );
+        if (!r.ok) return;
+        const data = await r.json();
+        for (const sig of (data.signals || [])) {
+          lastSigIdRef.current = sig.id;
+          if (sig.type === 'answer') {
+            if (pc.signalingState === 'have-local-offer') {
+              await pc.setRemoteDescription(new RTCSessionDescription(sig.payload.sdp));
+            }
+          } else if (sig.type === 'ice') {
+            if (pc.remoteDescription) {
+              try { await pc.addIceCandidate(new RTCIceCandidate(sig.payload.candidate)); } catch { /* ignore */ }
+            }
+          } else if (sig.type === 'end') {
+            endCallRef.current();
+          }
+        }
+      } catch { /* ignore */ }
+    }, 800);
+  }, []);
 
   const toggleMute = useCallback(() => {
     if (!localStreamRef.current) return;
@@ -407,34 +427,43 @@ export default function Index() {
     const callId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const pc = createPC(callId, partnerId);
     try {
-      const constraints = { audio: true, video: type === 'video' ? { facingMode: 'user' } : false };
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: type === 'video' ? { facingMode: 'user', width: 640, height: 480 } : false
+      });
       localStreamRef.current = stream;
       stream.getTracks().forEach(t => pc.addTrack(t, stream));
       if (type === 'video' && localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
         localVideoRef.current.play().catch(() => {});
       }
-      const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: type === 'video' });
+      const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      await sendSignal(callId, partnerId, 'offer', { sdp: offer, callType: type });
-      authFetch(`${MSG_URL}?action=log-call`, { method: 'POST', body: JSON.stringify({ callee_id: partnerId, type, status: 'outgoing' }) });
+      await sendSignal(callId, partnerId, 'offer', { sdp: pc.localDescription, callType: type });
+      fetch(`${MSG_URL}?action=log-call`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Authorization': `Bearer ${tokenRef.current}` },
+        body: JSON.stringify({ callee_id: partnerId, type, status: 'outgoing' })
+      }).catch(() => {});
       setCallStatus('calling');
       setIsMuted(false); setIsCameraOff(false);
       setCallScreen({ partnerId, partnerName, type, callId, outgoing: true });
       setScreen('call');
       startSigPolling(callId, pc);
-    } catch (e) {
+    } catch {
       pc.close();
       alert('Нет доступа к микрофону' + (type === 'video' ? '/камере' : ''));
     }
   };
 
   const answerCall = async (sig: { callId: string; fromId: number; fromName: string; type: 'voice' | 'video'; offer: RTCSessionDescriptionInit }) => {
+    setIncomingCall(null);
     const pc = createPC(sig.callId, sig.fromId);
     try {
-      const constraints = { audio: true, video: sig.type === 'video' ? { facingMode: 'user' } : false };
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: sig.type === 'video' ? { facingMode: 'user', width: 640, height: 480 } : false
+      });
       localStreamRef.current = stream;
       stream.getTracks().forEach(t => pc.addTrack(t, stream));
       if (sig.type === 'video' && localVideoRef.current) {
@@ -444,13 +473,13 @@ export default function Index() {
       await pc.setRemoteDescription(new RTCSessionDescription(sig.offer));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      await sendSignal(sig.callId, sig.fromId, 'answer', { sdp: answer });
+      await sendSignal(sig.callId, sig.fromId, 'answer', { sdp: pc.localDescription });
       setCallStatus('calling');
       setIsMuted(false); setIsCameraOff(false);
       setCallScreen({ partnerId: sig.fromId, partnerName: sig.fromName, type: sig.type, callId: sig.callId, outgoing: false });
       setScreen('call');
       startSigPolling(sig.callId, pc);
-    } catch (e) {
+    } catch {
       pc.close();
       alert('Нет доступа к микрофону' + (sig.type === 'video' ? '/камере' : ''));
     }
@@ -673,8 +702,8 @@ export default function Index() {
           <div style={{ flex: 1, color: '#fff', fontSize: 14 }}>
             📞 {incomingCall.type === 'video' ? 'Видеозвонок' : 'Звонок'} от <b>{incomingCall.fromName}</b>
           </div>
-          <button onClick={() => setIncomingCall(null)} style={{ background: '#e05c5c', border: 'none', borderRadius: 8, padding: '6px 14px', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>Откл.</button>
-          <button onClick={() => { answerCall(incomingCall); setIncomingCall(null); }} style={{ background: '#4dbb5e', border: 'none', borderRadius: 8, padding: '6px 14px', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>Принять</button>
+          <button onClick={() => { sendSignal(incomingCall.callId, incomingCall.fromId, 'end', {}); setIncomingCall(null); }} style={{ background: '#e05c5c', border: 'none', borderRadius: 8, padding: '6px 14px', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>Откл.</button>
+          <button onClick={() => answerCall(incomingCall)} style={{ background: '#4dbb5e', border: 'none', borderRadius: 8, padding: '6px 14px', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>Принять</button>
         </div>
       )}
 
