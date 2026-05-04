@@ -77,6 +77,10 @@ export default function Index() {
   const [recSeconds, setRecSeconds] = useState(0);
   const [incomingCall, setIncomingCall] = useState<{ callId: string; fromId: number; fromName: string; type: 'voice' | 'video'; offer: RTCSessionDescriptionInit } | null>(null);
   const [callScreen, setCallScreen] = useState<{ partnerId: number; partnerName: string; type: 'voice' | 'video'; callId: string; outgoing: boolean } | null>(null);
+  const [callDuration, setCallDuration] = useState(0);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isCameraOff, setIsCameraOff] = useState(false);
+  const [callStatus, setCallStatus] = useState<'calling' | 'connected' | 'ended'>('calling');
 
   // Refs
   const tokenRef = useRef<string | null>(null);
@@ -92,6 +96,8 @@ export default function Index() {
   const lastSigIdRef = useRef(0);
   const incomingPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const incomingLastSigRef = useRef(0);
+  const screenRef = useRef<Screen>('main');
+  const callDurationRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const msgPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeConvRef = useRef<Conversation | null>(null);
@@ -100,6 +106,7 @@ export default function Index() {
   const token = auth.accessToken;
   tokenRef.current = token;
   activeConvRef.current = activeConv;
+  screenRef.current = screen;
 
   const authUser = auth.user as { id: number; email: string; name: string | null; user_uid?: string; username?: string } | null;
 
@@ -191,13 +198,13 @@ export default function Index() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Поллинг входящих звонков — один раз, читает токен из ref
+  // Поллинг входящих звонков — читает screen из ref, без замыкания
   useEffect(() => {
     if (!authUser?.id) return;
     const userId = authUser.id;
     incomingPollRef.current = setInterval(async () => {
       if (!tokenRef.current) return;
-      if (screen === 'call') return;
+      if (screenRef.current === 'call') return; // ref вместо замкнутого state
       try {
         const r = await fetch(
           `${MSG_URL}?action=signal-poll&call_id=incoming-${userId}&after_id=${incomingLastSigRef.current}`,
@@ -212,9 +219,9 @@ export default function Index() {
           }
         }
       } catch { /* ignore */ }
-    }, 2500);
+    }, 1500);
     return () => { if (incomingPollRef.current) clearInterval(incomingPollRef.current); };
-  }, [authUser?.id]); // только id, не screen/authFetch
+  }, [authUser?.id]);
 
   const sendMessage = async () => {
     if (!inputText.trim() || !activeConv) return;
@@ -277,81 +284,176 @@ export default function Index() {
   };
 
   // WebRTC
+  // ICE серверы — STUN + публичный TURN для прохождения через NAT/мобильный интернет
+  const ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  ];
+
   const sendSignal = useCallback(async (callId: string, toUserId: number, type: string, payload: object) => {
     if (!tokenRef.current) return;
-    await fetch(`${MSG_URL}?action=signal-send`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Authorization': `Bearer ${tokenRef.current}` },
-      body: JSON.stringify({ call_id: callId, to_user_id: toUserId, type, payload })
-    });
+    try {
+      await fetch(`${MSG_URL}?action=signal-send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Authorization': `Bearer ${tokenRef.current}` },
+        body: JSON.stringify({ call_id: callId, to_user_id: toUserId, type, payload })
+      });
+    } catch { /* ignore */ }
+  }, []);
+
+  const stopCallTimer = useCallback(() => {
+    if (callDurationRef.current) { clearInterval(callDurationRef.current); callDurationRef.current = null; }
+  }, []);
+
+  const startCallTimer = useCallback(() => {
+    setCallDuration(0);
+    callDurationRef.current = setInterval(() => setCallDuration(d => d + 1), 1000);
   }, []);
 
   const endCall = useCallback(() => {
-    if (sigPollRef.current) clearInterval(sigPollRef.current);
+    if (sigPollRef.current) { clearInterval(sigPollRef.current); sigPollRef.current = null; }
+    stopCallTimer();
     if (pcRef.current) { pcRef.current.close(); pcRef.current = null; }
     if (localStreamRef.current) { localStreamRef.current.getTracks().forEach(t => t.stop()); localStreamRef.current = null; }
-    setCallScreen(prev => { if (prev) sendSignal(prev.callId, prev.partnerId, 'end', {}); return null; });
+    setCallScreen(prev => {
+      if (prev) sendSignal(prev.callId, prev.partnerId, 'end', {});
+      return null;
+    });
+    setCallStatus('calling');
+    setIsMuted(false);
+    setIsCameraOff(false);
     setScreen('main');
-  }, [sendSignal]);
+  }, [sendSignal, stopCallTimer]);
+
+  // Запуск поллинга сигналов для звонка (работает для обеих сторон)
+  const startSigPolling = useCallback((callId: string, pc: RTCPeerConnection) => {
+    if (sigPollRef.current) clearInterval(sigPollRef.current);
+    lastSigIdRef.current = 0;
+    sigPollRef.current = setInterval(async () => {
+      if (!tokenRef.current) return;
+      try {
+        const r = await fetch(
+          `${MSG_URL}?action=signal-poll&call_id=${callId}&after_id=${lastSigIdRef.current}`,
+          { headers: { 'X-Authorization': `Bearer ${tokenRef.current}` } }
+        );
+        if (!r.ok) return;
+        const data = await r.json();
+        for (const sig of (data.signals || [])) {
+          lastSigIdRef.current = sig.id;
+          if (sig.type === 'answer' && pc.signalingState !== 'stable') {
+            await pc.setRemoteDescription(new RTCSessionDescription(sig.payload.sdp));
+          } else if (sig.type === 'ice') {
+            try { await pc.addIceCandidate(new RTCIceCandidate(sig.payload.candidate)); } catch { /* ignore */ }
+          } else if (sig.type === 'end') {
+            endCall();
+          }
+        }
+      } catch { /* ignore */ }
+    }, 800);
+  }, [endCall]);
 
   const createPC = useCallback((callId: string, partnerId: number) => {
-    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-    pc.onicecandidate = e => { if (e.candidate) sendSignal(callId, partnerId, 'ice', { candidate: e.candidate }); };
-    pc.ontrack = e => {
-      if (remoteAudioRef.current) { remoteAudioRef.current.srcObject = e.streams[0]; remoteAudioRef.current.play().catch(() => {}); }
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+    pc.onicecandidate = e => {
+      if (e.candidate) sendSignal(callId, partnerId, 'ice', { candidate: e.candidate });
     };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') {
+        setCallStatus('connected');
+        startCallTimer();
+      } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        setCallStatus('ended');
+        setTimeout(endCall, 1500);
+      }
+    };
+
+    pc.ontrack = e => {
+      const stream = e.streams[0];
+      if (remoteAudioRef.current && !remoteAudioRef.current.srcObject) {
+        remoteAudioRef.current.srcObject = stream;
+        remoteAudioRef.current.play().catch(() => {});
+      }
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
+    };
+
     pcRef.current = pc;
     return pc;
-  }, [sendSignal]);
+  }, [sendSignal, startCallTimer, endCall]); // eslint-disable-line
+
+  const toggleMute = useCallback(() => {
+    if (!localStreamRef.current) return;
+    const audioTrack = localStreamRef.current.getAudioTracks()[0];
+    if (audioTrack) {
+      audioTrack.enabled = !audioTrack.enabled;
+      setIsMuted(!audioTrack.enabled);
+    }
+  }, []);
+
+  const toggleCamera = useCallback(() => {
+    if (!localStreamRef.current) return;
+    const videoTrack = localStreamRef.current.getVideoTracks()[0];
+    if (videoTrack) {
+      videoTrack.enabled = !videoTrack.enabled;
+      setIsCameraOff(!videoTrack.enabled);
+    }
+  }, []);
 
   const startCall = async (partnerId: number, partnerName: string, type: 'voice' | 'video') => {
     const callId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    lastSigIdRef.current = 0;
     const pc = createPC(callId, partnerId);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: type === 'video' });
+      const constraints = { audio: true, video: type === 'video' ? { facingMode: 'user' } : false };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       localStreamRef.current = stream;
       stream.getTracks().forEach(t => pc.addTrack(t, stream));
-      if (type === 'video' && localVideoRef.current) localVideoRef.current.srcObject = stream;
-      const offer = await pc.createOffer();
+      if (type === 'video' && localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+        localVideoRef.current.play().catch(() => {});
+      }
+      const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: type === 'video' });
       await pc.setLocalDescription(offer);
       await sendSignal(callId, partnerId, 'offer', { sdp: offer, callType: type });
-      await authFetch(`${MSG_URL}?action=log-call`, { method: 'POST', body: JSON.stringify({ callee_id: partnerId, type, status: 'outgoing' }) });
+      authFetch(`${MSG_URL}?action=log-call`, { method: 'POST', body: JSON.stringify({ callee_id: partnerId, type, status: 'outgoing' }) });
+      setCallStatus('calling');
+      setIsMuted(false); setIsCameraOff(false);
       setCallScreen({ partnerId, partnerName, type, callId, outgoing: true });
       setScreen('call');
-      sigPollRef.current = setInterval(async () => {
-        if (!tokenRef.current) return;
-        try {
-          const r = await fetch(`${MSG_URL}?action=signal-poll&call_id=${callId}&after_id=${lastSigIdRef.current}`,
-            { headers: { 'X-Authorization': `Bearer ${tokenRef.current}` } });
-          if (!r.ok) return;
-          const data = await r.json();
-          for (const sig of (data.signals || [])) {
-            lastSigIdRef.current = sig.id;
-            if (sig.type === 'answer') await pc.setRemoteDescription(new RTCSessionDescription(sig.payload.sdp));
-            else if (sig.type === 'ice') await pc.addIceCandidate(new RTCIceCandidate(sig.payload.candidate));
-            else if (sig.type === 'end') endCall();
-          }
-        } catch { /* ignore */ }
-      }, 1000);
-    } catch { alert('Нет доступа к камере/микрофону'); }
+      startSigPolling(callId, pc);
+    } catch (e) {
+      pc.close();
+      alert('Нет доступа к микрофону' + (type === 'video' ? '/камере' : ''));
+    }
   };
 
   const answerCall = async (sig: { callId: string; fromId: number; fromName: string; type: 'voice' | 'video'; offer: RTCSessionDescriptionInit }) => {
-    lastSigIdRef.current = 0;
     const pc = createPC(sig.callId, sig.fromId);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: sig.type === 'video' });
+      const constraints = { audio: true, video: sig.type === 'video' ? { facingMode: 'user' } : false };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       localStreamRef.current = stream;
       stream.getTracks().forEach(t => pc.addTrack(t, stream));
+      if (sig.type === 'video' && localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+        localVideoRef.current.play().catch(() => {});
+      }
       await pc.setRemoteDescription(new RTCSessionDescription(sig.offer));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       await sendSignal(sig.callId, sig.fromId, 'answer', { sdp: answer });
+      setCallStatus('calling');
+      setIsMuted(false); setIsCameraOff(false);
       setCallScreen({ partnerId: sig.fromId, partnerName: sig.fromName, type: sig.type, callId: sig.callId, outgoing: false });
       setScreen('call');
-    } catch { alert('Нет доступа к камере/микрофону'); }
+      startSigPolling(sig.callId, pc);
+    } catch (e) {
+      pc.close();
+      alert('Нет доступа к микрофону' + (sig.type === 'video' ? '/камере' : ''));
+    }
   };
 
   const findUser = async () => {
@@ -415,26 +517,60 @@ export default function Index() {
 
   // ─── CALL SCREEN ───
   if (screen === 'call' && callScreen) {
+    const isVideo = callScreen.type === 'video';
+    const statusText = callStatus === 'connected' ? formatDuration(callDuration) : callStatus === 'ended' ? 'Завершается...' : callScreen.outgoing ? 'Вызов...' : 'Входящий...';
     return (
-      <div style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#0a0f18' }}>
-        {callScreen.type === 'video' && (
-          <>
-            <video ref={remoteVideoRef} autoPlay playsInline style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.7 }} />
-            <video ref={localVideoRef} autoPlay playsInline muted style={{ position: 'absolute', bottom: 140, right: 16, width: 100, height: 140, borderRadius: 12, objectFit: 'cover', zIndex: 10 }} />
-          </>
+      <div style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: '#0a0f18' }}>
+        {/* Видео удалённого */}
+        {isVideo && (
+          <video ref={remoteVideoRef} autoPlay playsInline
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
         )}
+        {/* Аудио всегда */}
         <audio ref={remoteAudioRef} autoPlay />
-        <div style={{ position: 'relative', zIndex: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
-          <div style={{ width: 90, height: 90, borderRadius: '50%', background: avatarColor(callScreen.partnerId), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32, fontWeight: 700, color: '#fff' }}>
-            {getInitials(callScreen.partnerName)}
-          </div>
-          <div style={{ color: '#fff', fontWeight: 700, fontSize: 24 }}>{callScreen.partnerName}</div>
-          <div style={{ color: '#8896a3', fontSize: 15 }}>{callScreen.outgoing ? 'Исходящий звонок...' : 'Входящий звонок...'}</div>
+
+        {/* Основной контент */}
+        <div style={{ position: 'relative', zIndex: 10, flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24,
+          background: isVideo && callStatus === 'connected' ? 'linear-gradient(to bottom, rgba(0,0,0,0.5) 0%, transparent 40%, transparent 60%, rgba(0,0,0,0.7) 100%)' : 'transparent' }}>
+          {(!isVideo || callStatus !== 'connected') && (
+            <>
+              <div style={{ width: 100, height: 100, borderRadius: '50%', background: avatarColor(callScreen.partnerId), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 36, fontWeight: 700, color: '#fff', boxShadow: '0 0 40px rgba(93,173,212,0.3)' }}>
+                {getInitials(callScreen.partnerName)}
+              </div>
+              <div style={{ color: '#fff', fontWeight: 700, fontSize: 26, marginTop: 8 }}>{callScreen.partnerName}</div>
+            </>
+          )}
+          <div style={{ color: callStatus === 'connected' ? '#4dbb5e' : '#8896a3', fontSize: 16, fontWeight: callStatus === 'connected' ? 700 : 400 }}>{statusText}</div>
         </div>
-        <div style={{ position: 'relative', zIndex: 20, marginTop: 60 }}>
-          <button onClick={endCall} style={{ width: 70, height: 70, borderRadius: '50%', background: '#e05c5c', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+
+        {/* Локальное видео (маленькое) */}
+        {isVideo && (
+          <video ref={localVideoRef} autoPlay playsInline muted
+            style={{ position: 'absolute', top: 'max(16px, env(safe-area-inset-top))', right: 16, width: 90, height: 130, borderRadius: 12, objectFit: 'cover', zIndex: 20, border: '2px solid rgba(255,255,255,0.2)', display: isCameraOff ? 'none' : 'block' }} />
+        )}
+
+        {/* Кнопки управления */}
+        <div style={{ position: 'relative', zIndex: 20, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 20, padding: '24px 24px', paddingBottom: 'max(24px, env(safe-area-inset-bottom))' }}>
+          {/* Mute */}
+          <button onClick={toggleMute} style={{ width: 60, height: 60, borderRadius: '50%', background: isMuted ? '#e05c5c' : 'rgba(255,255,255,0.15)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 4 }}>
+            <Icon name={isMuted ? 'MicOff' : 'Mic'} size={24} className="text-white" />
+          </button>
+
+          {/* Завершить */}
+          <button onClick={endCall} style={{ width: 72, height: 72, borderRadius: '50%', background: '#e05c5c', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 20px rgba(224,92,92,0.5)' }}>
             <Icon name="PhoneOff" size={30} className="text-white" />
           </button>
+
+          {/* Camera / Speaker */}
+          {isVideo ? (
+            <button onClick={toggleCamera} style={{ width: 60, height: 60, borderRadius: '50%', background: isCameraOff ? '#e05c5c' : 'rgba(255,255,255,0.15)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Icon name={isCameraOff ? 'VideoOff' : 'Video'} size={24} className="text-white" />
+            </button>
+          ) : (
+            <button style={{ width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.15)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Icon name="Volume2" size={24} className="text-white" />
+            </button>
+          )}
         </div>
       </div>
     );
