@@ -37,6 +37,7 @@ export default function AuthPage({ auth }: AuthPageProps) {
           <RegisterForm
             onRegister={auth.register}
             onVerifyEmail={auth.verifyEmail}
+            onLogin={auth.login}
             onLoginClick={() => setView("login")}
             error={auth.error}
             isLoading={auth.isLoading}
