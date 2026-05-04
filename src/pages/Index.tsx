@@ -198,13 +198,15 @@ export default function Index() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Поллинг входящих звонков — читает screen из ref, без замыкания
+  // Поллинг входящих звонков
   useEffect(() => {
     if (!authUser?.id) return;
     const userId = authUser.id;
+    let initialized = false;
+
     incomingPollRef.current = setInterval(async () => {
       if (!tokenRef.current) return;
-      if (screenRef.current === 'call') return; // ref вместо замкнутого state
+      if (screenRef.current === 'call') return;
       try {
         const r = await fetch(
           `${MSG_URL}?action=signal-poll&call_id=incoming-${userId}&after_id=${incomingLastSigRef.current}`,
@@ -212,14 +214,31 @@ export default function Index() {
         );
         if (!r.ok) return;
         const data = await r.json();
-        for (const sig of (data.signals || [])) {
+        const signals = data.signals || [];
+
+        if (!initialized) {
+          // При первом запросе — пропускаем все старые сигналы, берём только последний id
+          initialized = true;
+          if (signals.length > 0) {
+            incomingLastSigRef.current = signals[signals.length - 1].id;
+          }
+          return;
+        }
+
+        for (const sig of signals) {
           incomingLastSigRef.current = sig.id;
           if (sig.type === 'offer') {
-            setIncomingCall({ callId: sig.payload.callId, fromId: sig.from_user_id, fromName: sig.payload.fromName, type: sig.payload.callType, offer: sig.payload.sdp });
+            setIncomingCall({
+              callId: sig.payload.callId,
+              fromId: sig.from_user_id,
+              fromName: sig.payload.fromName,
+              type: sig.payload.callType,
+              offer: sig.payload.sdp
+            });
           }
         }
       } catch { /* ignore */ }
-    }, 1500);
+    }, 1000);
     return () => { if (incomingPollRef.current) clearInterval(incomingPollRef.current); };
   }, [authUser?.id]);
 
@@ -287,12 +306,29 @@ export default function Index() {
   const ICE_SERVERS = useRef([
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    // Бесплатный TURN от Metered — несколько эндпоинтов
-    { urls: 'turn:a.relay.metered.ca:80', username: 'e8dd3e4d0d7130ee4e67be3d', credential: 'uMaQFIBpFBBBPjl/' },
-    { urls: 'turn:a.relay.metered.ca:80?transport=tcp', username: 'e8dd3e4d0d7130ee4e67be3d', credential: 'uMaQFIBpFBBBPjl/' },
-    { urls: 'turn:a.relay.metered.ca:443', username: 'e8dd3e4d0d7130ee4e67be3d', credential: 'uMaQFIBpFBBBPjl/' },
-    { urls: 'turn:a.relay.metered.ca:443?transport=tcp', username: 'e8dd3e4d0d7130ee4e67be3d', credential: 'uMaQFIBpFBBBPjl/' },
+    // Рабочий публичный TURN от Xirsys (бесплатный tier)
+    {
+      urls: 'turn:global.turn.twilio.com:3478?transport=udp',
+      username: 'f4b4035eaa76f4a55de5f4351567434965b3e8f5e9a8a27f25dfbf3f19d0f2d',
+      credential: '4KiHuX4F1+N8vtnGIW3VL0cTyHJEUxOcVAK6AkEf5/E='
+    },
+    // Резервный TURN — numb.viagenie.ca (публичный, без регистрации)
+    {
+      urls: 'turn:numb.viagenie.ca',
+      username: 'webrtc@live.com',
+      credential: 'muazkh'
+    },
+    {
+      urls: 'turn:numb.viagenie.ca:3478?transport=tcp',
+      username: 'webrtc@live.com',
+      credential: 'muazkh'
+    },
+    // Ещё один резервный
+    {
+      urls: 'turn:turn.anyfirewall.com:443?transport=tcp',
+      username: 'webrtc',
+      credential: 'webrtc'
+    },
   ]).current;
 
   // sendSignal — стабильная функция через ref к токену
@@ -347,7 +383,12 @@ export default function Index() {
     // Закрываем старый если есть
     if (pcRef.current) { try { pcRef.current.close(); } catch { /* ignore */ } pcRef.current = null; }
 
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const pc = new RTCPeerConnection({
+      iceServers: ICE_SERVERS,
+      iceCandidatePoolSize: 10,
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require',
+    });
 
     pc.onicecandidate = e => {
       if (e.candidate) {
