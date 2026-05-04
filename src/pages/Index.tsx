@@ -153,6 +153,18 @@ export default function Index() {
     } catch { /* ignore */ }
   }, [authFetch]);
 
+  // Заполняем профиль сразу из authUser (данные из JWT/refresh — всегда актуальны из БД)
+  useEffect(() => {
+    if (!authUser) return;
+    if (authUser.name) setProfileName(authUser.name);
+    else if (authUser.email) setProfileName(authUser.email.split('@')[0]);
+    if (authUser.user_uid) setMyUid(authUser.user_uid);
+    if (authUser.username !== undefined) {
+      setMyUsername(authUser.username || '');
+      setProfileUsername(authUser.username || '');
+    }
+  }, [authUser?.id, authUser?.name, authUser?.user_uid, authUser?.username]); // eslint-disable-line
+
   // Загружаем данные при появлении токена
   useEffect(() => {
     if (token) loadConversations();
