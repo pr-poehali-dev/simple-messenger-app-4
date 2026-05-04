@@ -79,6 +79,7 @@ export function RegisterForm({
   const [localError, setLocalError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [isResending, setIsResending] = useState(false);
+  const [isBusy, setIsBusy] = useState(false);
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -99,11 +100,13 @@ export function RegisterForm({
       return;
     }
 
+    setIsBusy(true);
     const result = await onRegister({
       email,
       password,
       name: name || undefined,
     });
+    setIsBusy(false);
 
     if (result.success) {
       if (result.emailVerificationRequired) {
@@ -112,6 +115,8 @@ export function RegisterForm({
       } else {
         onSuccess?.();
       }
+    } else if (!result.success && !result.emailVerificationRequired) {
+      setLocalError("Ошибка регистрации. Попробуйте ещё раз.");
     }
   };
 
@@ -127,14 +132,16 @@ export function RegisterForm({
     const verified = await onVerifyEmail(email, code);
 
     if (verified) {
-      // Auto-login after verification
-      const loggedIn = await onLogin({ email, password });
-      if (loggedIn) {
-        onSuccess?.();
-      } else {
-        // If auto-login failed, redirect to login page
-        onLoginClick?.();
+      if (onLogin) {
+        const loggedIn = await onLogin({ email, password });
+        if (loggedIn) {
+          onSuccess?.();
+          return;
+        }
       }
+      // Верификация прошла, но автовход не удался — предлагаем войти вручную
+      setMessage("Email подтверждён! Войдите в аккаунт.");
+      onLoginClick?.();
     }
   };
 
@@ -329,8 +336,8 @@ export function RegisterForm({
         </CardContent>
 
         <CardFooter className="flex flex-col space-y-4">
-          <Button type="submit" className="w-full" disabled={isLoading}>
-            {isLoading ? "Регистрация..." : "Зарегистрироваться"}
+          <Button type="submit" className="w-full" disabled={isBusy || isLoading}>
+            {isBusy || isLoading ? "Регистрация..." : "Зарегистрироваться"}
           </Button>
 
           {onLoginClick && (
