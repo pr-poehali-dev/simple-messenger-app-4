@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { useAuth } from '@/components/extensions/auth-email/useAuth';
+import AuthPage from './Auth';
 import Sidebar from '@/components/messenger/Sidebar';
 import DialogList from '@/components/messenger/DialogList';
 import ChatWindow from '@/components/messenger/ChatWindow';
@@ -11,9 +13,34 @@ import ProfilePanel from '@/components/messenger/ProfilePanel';
 import SettingsPanel from '@/components/messenger/SettingsPanel';
 import type { Dialog } from '@/components/messenger/DialogList';
 
+const AUTH_URL = "https://functions.poehali.dev/9d23499c-1556-498e-801e-74e66d3ae884";
+
 export default function Index() {
   const [activeSection, setActiveSection] = useState('dialogs');
   const [selectedDialog, setSelectedDialog] = useState<Dialog | null>(null);
+
+  const auth = useAuth({
+    apiUrls: {
+      login: `${AUTH_URL}?action=login`,
+      register: `${AUTH_URL}?action=register`,
+      verifyEmail: `${AUTH_URL}?action=verify-email`,
+      refresh: `${AUTH_URL}?action=refresh`,
+      logout: `${AUTH_URL}?action=logout`,
+      resetPassword: `${AUTH_URL}?action=reset-password`,
+    },
+  });
+
+  if (auth.isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[var(--bg)]">
+        <div className="text-[var(--text-muted)] text-sm">Загрузка...</div>
+      </div>
+    );
+  }
+
+  if (!auth.isAuthenticated) {
+    return <AuthPage onSuccess={() => {}} />;
+  }
 
   const hasChatPanel = activeSection === 'dialogs';
 
